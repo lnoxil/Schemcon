@@ -112,6 +112,11 @@ def _state_from_litematic_entry(entry: CompoundLike) -> str:
     return name
 
 
+def _state_base_from_litematic_entry(entry: CompoundLike) -> str:
+    """Return only namespaced block id (without properties) for FAWE-safe palette entries."""
+    return _normalize_block_name(str(entry.get("Name", "minecraft:air")))
+
+
 def _parse_blockstate(value: str) -> tuple[str, dict[str, str]]:
     base, props_raw = _split_blockstate(value)
     props: dict[str, str] = {}
@@ -424,7 +429,7 @@ def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> n
         if not palette_list or packed is None:
             continue
 
-        local_states = [_state_from_litematic_entry(entry) for entry in palette_list if isinstance(entry, nbtlib.Compound)]
+        local_states = [_state_base_from_litematic_entry(entry) for entry in palette_list if isinstance(entry, nbtlib.Compound)]
         if not local_states:
             continue
 
@@ -442,7 +447,7 @@ def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> n
                     if p_idx < 0 or p_idx >= len(local_states):
                         state = "minecraft:air"
                     else:
-                        state = _normalize_blockstate_string(local_states[p_idx])
+                        state = _normalize_block_name(local_states[p_idx])
 
                     if state not in global_palette:
                         global_palette[state] = len(global_palette)
@@ -610,4 +615,18 @@ def load_schematic(path: str) -> Schematic:
 
 
 def save_schematic(schematic: Schematic, path: str) -> None:
-    _save_nbt(path, schematic.root)
+    root_to_save = schematic.root
+
+    # If schematic has no root Sponge palette, convert region/litematic-like structure
+    # to a root Sponge v2 schematic before saving so FAWE can read it reliably.
+    if _find_named_compound(root_to_save, "Palette") is None:
+        sponge = _build_sponge_from_regions(root_to_save, sponge_version=2)
+        if sponge is not None:
+            root_to_save = sponge
+
+    found = _find_named_compound(root_to_save, "Palette")
+    if found is not None:
+        parent, key, _palette = found
+        _sanitize_root_palette_and_blockdata(root_to_save, parent, key)
+
+    _save_nbt(path, root_to_save)
