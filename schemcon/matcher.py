@@ -58,6 +58,8 @@ NEVER_TARGET_PREFIXES = (
     "minecraft:potted_",
 )
 
+COLOR_FAMILIES = {"concrete", "concrete_powder", "terracotta", "wool", "stained_glass", "stained_glass_pane"}
+
 PREFERRED_REPLACEMENTS = {
     "grass_plant": "short_grass",
     "flower_small": "dandelion",
@@ -92,6 +94,12 @@ def _score(candidate: BlockTraits, source: BlockTraits) -> float:
         score += 600.0
     if source.category != "command_block" and candidate.category == "command_block":
         score += 1200.0
+    if source.block_type == "solid" and candidate.family == "glass" and source.family != "glass":
+        score += 260.0
+    if source.family in COLOR_FAMILIES and candidate.family not in COLOR_FAMILIES:
+        score += 220.0
+    if source.family not in COLOR_FAMILIES and candidate.family in COLOR_FAMILIES:
+        score += 150.0
 
     token_sim = _token_similarity(candidate.tokens, source.tokens)
     score += (1.0 - token_sim) * 50.0
@@ -111,6 +119,11 @@ def _is_safe_match(source: BlockTraits, candidate: BlockTraits, score: float) ->
     same_shape = source.shape == candidate.shape
     same_family = source.family == candidate.family
     same_category = source.category == candidate.category
+
+    if source.family in COLOR_FAMILIES and candidate.family not in COLOR_FAMILIES:
+        return False
+    if source.family not in COLOR_FAMILIES and candidate.family == "wool":
+        return False
 
     if same_shape and same_family and same_category and score < 100:
         return True

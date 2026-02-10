@@ -112,8 +112,18 @@ def apply_mapping_to_palette(palette: dict[str, int], mapping: dict[str, str]) -
     warnings = []
     used_targets = {}
 
+    air_index = palette.get("minecraft:air")
+    if air_index is not None:
+        # Preserve air ID so fallback collisions never rewrite air to solid blocks.
+        used_targets["minecraft:air"] = air_index
+        new_palette["minecraft:air"] = air_index
+
     for name, index in palette.items():
+        if name == "minecraft:air":
+            continue
         target = _resolve_target(name, mapping)
+        if target == "minecraft:air" and air_index is not None and air_index != index:
+            target = _pick_safe_collision_target(used_targets, name, index)
         existing = used_targets.get(target)
 
         if target == "minecraft:air" and name != "minecraft:air":
@@ -141,10 +151,35 @@ def apply_smart_mapping_to_palette(
     replacements = []
     used_targets = {}
 
+    air_index = palette.get("minecraft:air")
+    if air_index is not None:
+        used_targets["minecraft:air"] = air_index
+        new_palette["minecraft:air"] = air_index
+        replacements.append(
+            {
+                "source": "minecraft:air",
+                "target": "minecraft:air",
+                "index": air_index,
+                "reason": "air_preserved",
+                "confidence": 1.0,
+                "changed": False,
+            }
+        )
+
     for name, index in palette.items():
+        if name == "minecraft:air":
+            continue
         mapping_info = _resolve_smart_target(name, mapping)
 
         target = mapping_info["target"]
+        if target == "minecraft:air" and air_index is not None and air_index != index:
+            target = _pick_safe_collision_target(used_targets, name, index)
+            mapping_info = {
+                "target": target,
+                "reason": "air_slot_preserved",
+                "confidence": 0.0,
+                "changed": name != target,
+            }
         existing = used_targets.get(target)
 
         if target == "minecraft:air" and name != "minecraft:air":
