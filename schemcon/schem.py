@@ -12,6 +12,19 @@ CompoundLike = nbtlib.Compound
 
 _BLOCK_NAME_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9_./-]+$")
 _BLOCK_PROP_RE = re.compile(r"^[a-z0-9_./-]+$")
+_SAFE_COLLISION_STATES = (
+    "minecraft:air",
+    "minecraft:stone",
+    "minecraft:dirt",
+    "minecraft:cobblestone",
+    "minecraft:oak_planks",
+    "minecraft:sand",
+    "minecraft:glass",
+    "minecraft:gravel",
+    "minecraft:netherrack",
+    "minecraft:water",
+    "minecraft:lava",
+)
 
 
 def _normalize_block_name(name: str) -> str:
@@ -45,6 +58,14 @@ def _normalize_blockstate_string(value: str) -> str:
         parts = [f"{key}={val}" for key, val in sorted(props.items())]
         return f"{base}[{','.join(parts)}]"
     return base
+
+
+def _pick_safe_collision_state(used_states: dict[str, int], index: int) -> str:
+    for candidate in _SAFE_COLLISION_STATES:
+        existing = used_states.get(candidate)
+        if existing is None or existing == index:
+            return candidate
+    return "minecraft:air"
 
 
 def _split_blockstate(value: str) -> tuple[str, str | None]:
@@ -412,15 +433,20 @@ class Schematic:
         if found is not None:
             parent, key, _palette = found
             normalized: dict[str, int] = {}
+            used_states: dict[str, int] = {}
             used_ids: dict[int, str] = {}
             for raw_name, raw_index in new_palette.items():
                 safe_name = _normalize_blockstate_string(raw_name)
                 safe_index = int(raw_index)
                 # Keep palette IDs unique and always associated with a resolvable state.
                 if safe_index in used_ids and used_ids[safe_index] != safe_name:
-                    safe_name = "minecraft:air"
+                    safe_name = _pick_safe_collision_state(used_states, safe_index)
+                state_owner = used_states.get(safe_name)
+                if state_owner is not None and state_owner != safe_index:
+                    safe_name = _pick_safe_collision_state(used_states, safe_index)
                 normalized[safe_name] = nbtlib.Int(safe_index)
                 used_ids[safe_index] = safe_name
+                used_states[safe_name] = safe_index
 
             parent[key] = nbtlib.Compound(normalized)
             if "PaletteMax" in self.root:

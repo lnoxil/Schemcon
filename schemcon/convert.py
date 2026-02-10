@@ -6,6 +6,30 @@ from .matcher import pick_best_match
 from .schem import load_schematic, save_schematic
 
 
+SAFE_COLLISION_STATES = (
+    "minecraft:air",
+    "minecraft:stone",
+    "minecraft:dirt",
+    "minecraft:cobblestone",
+    "minecraft:oak_planks",
+    "minecraft:sand",
+    "minecraft:glass",
+    "minecraft:gravel",
+    "minecraft:netherrack",
+    "minecraft:water",
+    "minecraft:lava",
+)
+
+
+def _pick_safe_collision_target(used_targets: dict[str, int], palette_name: str, index: int) -> str:
+    for candidate in SAFE_COLLISION_STATES:
+        existing = used_targets.get(candidate)
+        if existing is None or existing == index:
+            return candidate
+    # Last resort: keep original palette name to avoid dropping this index completely.
+    return palette_name
+
+
 def _split_blockstate(name: str) -> tuple[str, str | None]:
     if "[" in name and name.endswith("]"):
         block, rest = name.split("[", 1)
@@ -84,10 +108,11 @@ def apply_mapping_to_palette(palette: dict[str, int], mapping: dict[str, str]) -
             warnings.append(f"Unmapped block {name}; replaced with minecraft:air for FAWE safety.")
 
         if existing is not None and existing != index:
+            fallback = _pick_safe_collision_target(used_targets, name, index)
             warnings.append(
-                f"Collision for {name} -> {target}; replacing with minecraft:air to keep palette ids valid for FAWE."
+                f"Collision for {name} -> {target}; replaced with {fallback} to keep palette ids valid for FAWE."
             )
-            target = "minecraft:air"
+            target = fallback
 
         new_palette[target] = index
         used_targets[target] = index
@@ -123,21 +148,22 @@ def apply_smart_mapping_to_palette(
             )
 
         if existing is not None and existing != index:
+            fallback = _pick_safe_collision_target(used_targets, name, index)
             warnings.append(
                 {
                     "type": "collision",
                     "source": name,
                     "target": target,
                     "index": index,
-                    "message": f"Collision: {name} -> {target} at index {index}; replaced with minecraft:air for FAWE safety.",
+                    "message": f"Collision: {name} -> {target} at index {index}; replaced with {fallback} for FAWE safety.",
                 }
             )
-            target = "minecraft:air"
+            target = fallback
             mapping_info = {
-                "target": "minecraft:air",
+                "target": target,
                 "reason": "collision_fallback",
                 "confidence": 0.0,
-                "changed": name != "minecraft:air",
+                "changed": name != target,
             }
 
         if mapping_info["changed"] and mapping_info["confidence"] < 0.5:
