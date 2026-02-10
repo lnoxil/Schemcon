@@ -44,7 +44,19 @@ CRITICAL_RULES = {
     "vine": {"vine"},
     "roots": {"roots", "vine"},
     "bamboo": {"bamboo"},
+    "potted_plant": {"potted_plant"},
+    "command_block": {"air"},
 }
+
+RESTRICTED_SOURCE_BLOCKS = {
+    "minecraft:command_block",
+    "minecraft:chain_command_block",
+    "minecraft:repeating_command_block",
+}
+
+NEVER_TARGET_PREFIXES = (
+    "minecraft:potted_",
+)
 
 PREFERRED_REPLACEMENTS = {
     "grass_plant": "short_grass",
@@ -74,6 +86,12 @@ def _score(candidate: BlockTraits, source: BlockTraits) -> float:
         score += 150.0
     if candidate.family != source.family:
         score += 100.0
+    if source.family != "wool" and candidate.family == "wool":
+        score += 220.0
+    if source.category != "potted_plant" and candidate.category == "potted_plant":
+        score += 600.0
+    if source.category != "command_block" and candidate.category == "command_block":
+        score += 1200.0
 
     token_sim = _token_similarity(candidate.tokens, source.tokens)
     score += (1.0 - token_sim) * 50.0
@@ -131,6 +149,12 @@ def _cached_traits(name: str) -> BlockTraits:
 
 
 def pick_best_match(source_name: str, target_blocks: set[str]) -> MatchResult:
+    source_base = source_name.split("[", 1)[0]
+    if source_base in RESTRICTED_SOURCE_BLOCKS:
+        return MatchResult(source=source_name, target="minecraft:air", reason="restricted_removed", confidence=1.0)
+    if source_base == "minecraft:air":
+        return MatchResult(source=source_name, target="minecraft:air", reason="air_preserved", confidence=1.0)
+
     if source_name in target_blocks:
         return MatchResult(source=source_name, target=source_name, reason="exact", confidence=1.0)
 
@@ -140,6 +164,8 @@ def pick_best_match(source_name: str, target_blocks: set[str]) -> MatchResult:
 
     for candidate_name in target_blocks:
         if candidate_name.startswith("#"):
+            continue
+        if any(candidate_name.startswith(prefix) for prefix in NEVER_TARGET_PREFIXES):
             continue
         candidate_traits = _cached_traits(candidate_name)
         score = _score(candidate_traits, source_traits)
@@ -180,15 +206,4 @@ def pick_best_match(source_name: str, target_blocks: set[str]) -> MatchResult:
                     confidence=0.6,
                 )
 
-    if incompatible_candidates:
-        incompatible_candidates.sort(key=lambda x: x[0])
-        score, candidate_name, _candidate_traits = incompatible_candidates[0]
-        if score < 200:
-            return MatchResult(
-                source=source_name,
-                target=candidate_name,
-                reason=f"unsafe_match(score={score:.1f})",
-                confidence=0.3,
-            )
-
-    return MatchResult(source=source_name, target=source_name, reason="no_safe_match", confidence=0.0)
+    return MatchResult(source=source_name, target="minecraft:air", reason="no_safe_match", confidence=0.0)

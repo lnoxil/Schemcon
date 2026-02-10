@@ -129,6 +129,12 @@ BLOCK_CATEGORIES = {
     "mangrove_roots": "roots",
     "bamboo": "bamboo",
     "bamboo_sapling": "bamboo",
+    "potted": "potted_plant",
+    "flower_pot": "potted_plant",
+    "decorated_pot": "pot_block",
+    "command_block": "command_block",
+    "chain_command_block": "command_block",
+    "repeating_command_block": "command_block",
 }
 
 BLOCK_PROPERTIES = {
@@ -160,6 +166,7 @@ BLOCK_PROPERTIES = {
         "roots",
         "bamboo",
         "mushroom_small",
+        "potted_plant",
     },
     "liquid": {
         "liquid_water",
