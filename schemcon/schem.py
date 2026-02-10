@@ -17,6 +17,23 @@ def _split_blockstate(value: str) -> tuple[str, str | None]:
     return value, None
 
 
+def _get_compound_root(loaded: object) -> CompoundLike:
+    """Handle nbtlib versions that return File or Compound from load()."""
+    if isinstance(loaded, nbtlib.Compound):
+        return loaded
+    root = getattr(loaded, "root", None)
+    if isinstance(root, nbtlib.Compound):
+        return root
+    if hasattr(loaded, "__getitem__"):
+        try:
+            maybe = loaded[""]
+            if isinstance(maybe, nbtlib.Compound):
+                return maybe
+        except Exception:
+            pass
+    raise TypeError("Unsupported NBT root type from nbtlib.load")
+
+
 def _state_from_litematic_entry(entry: CompoundLike) -> str:
     name = str(entry.get("Name", "minecraft:air"))
     props = entry.get("Properties")
@@ -106,12 +123,28 @@ def _region_box(region: CompoundLike) -> tuple[int, int, int, int, int, int]:
     return px, py, pz, sx, sy, sz
 
 
+def _active_regions(root: CompoundLike) -> list[tuple[CompoundLike, tuple[int, int, int, int, int, int]]]:
+    active: list[tuple[CompoundLike, tuple[int, int, int, int, int, int]]] = []
+    for region in _iter_regions(root):
+        palette_list = region.get("BlockStatePalette")
+        packed = region.get("BlockStates")
+        if not palette_list or packed is None:
+            continue
+        box = _region_box(region)
+        if box[3] <= 0 or box[4] <= 0 or box[5] <= 0:
+            continue
+        active.append((region, box))
+    return active
+
+
 def _build_sponge_from_regions(root: CompoundLike) -> nbtlib.Compound | None:
-    regions = list(_iter_regions(root))
-    if not regions:
+    active = _active_regions(root)
+    if not active:
         return None
 
-    boxes = [_region_box(r) for r in regions]
+    boxes = [box for _region, box in active]
+    total_region_volume = sum(sx * sy * sz for _px, _py, _pz, sx, sy, sz in boxes)
+
     min_x = min(b[0] for b in boxes)
     min_y = min(b[1] for b in boxes)
     min_z = min(b[2] for b in boxes)
@@ -120,13 +153,37 @@ def _build_sponge_from_regions(root: CompoundLike) -> nbtlib.Compound | None:
     max_z = max(b[2] + b[5] for b in boxes)
     width, height, length = max_x - min_x, max_y - min_y, max_z - min_z
     volume = width * height * length
+
+    # Some FAWE/Litematic exports keep regions far apart in world coordinates,
+    # which creates enormous sparse schematics. Repack regions when too sparse.
+    repacked_sparse = False
+    if total_region_volume > 0 and volume > total_region_volume * 8:
+        repacked_sparse = True
+        cursor_x = 0
+        repacked: list[tuple[CompoundLike, tuple[int, int, int, int, int, int]]] = []
+        max_h = 0
+        max_l = 0
+        for region, (_px, _py, _pz, sx, sy, sz) in active:
+            repacked.append((region, (cursor_x, 0, 0, sx, sy, sz)))
+            cursor_x += sx + 1
+            max_h = max(max_h, sy)
+            max_l = max(max_l, sz)
+        active = repacked
+        width = max(1, cursor_x - 1)
+        height = max(1, max_h)
+        length = max(1, max_l)
+        volume = width * height * length
+        min_x = 0
+        min_y = 0
+        min_z = 0
+
     if volume <= 0:
         return None
 
     global_palette: dict[str, int] = {"minecraft:air": 0}
     block_ids = [0] * volume
 
-    for region, (px, py, pz, sx, sy, sz) in zip(regions, boxes):
+    for region, (px, py, pz, sx, sy, sz) in active:
         palette_list = region.get("BlockStatePalette")
         packed = region.get("BlockStates")
         if not palette_list or packed is None:
@@ -154,7 +211,11 @@ def _build_sponge_from_regions(root: CompoundLike) -> nbtlib.Compound | None:
 
                     if state not in global_palette:
                         global_palette[state] = len(global_palette)
-                    gi = _index((px - min_x) + x, (py - min_y) + y, (pz - min_z) + z, width, length)
+                    if repacked_sparse:
+                        offset_x, offset_y, offset_z = px, py, pz
+                    else:
+                        offset_x, offset_y, offset_z = px - min_x, py - min_y, pz - min_z
+                    gi = _index(offset_x + x, offset_y + y, offset_z + z, width, length)
                     if 0 <= gi < volume:
                         block_ids[gi] = global_palette[state]
 
@@ -188,7 +249,7 @@ def _build_sponge_from_regions(root: CompoundLike) -> nbtlib.Compound | None:
 
 def export_fawe_compatible(path: str) -> None:
     loaded = nbtlib.load(path)
-    root = loaded.root
+    root = _get_compound_root(loaded)
     if _find_named_compound(root, "Palette") is not None and "BlockData" in root:
         return
     sponge = _build_sponge_from_regions(root)
@@ -257,7 +318,7 @@ class Schematic:
 
 
 def load_schematic(path: str) -> Schematic:
-    root = nbtlib.load(path).root
+    root = _get_compound_root(nbtlib.load(path))
     return Schematic(root=root)
 
 
