@@ -113,7 +113,7 @@ def _extract_block_names_from_server_tags(server_jar: pathlib.Path) -> set[str]:
             except (json.JSONDecodeError, UnicodeDecodeError):
                 continue
             for value in payload.get("values", []):
-                if isinstance(value, str) and ":" in value:
+                if isinstance(value, str) and ":" in value and not value.startswith("#"):
                     names.add(value)
     return names
 

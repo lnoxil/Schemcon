@@ -288,10 +288,25 @@ class SchemconApp(ttk.Frame):
         target_dir = pathlib.Path(fawe_dir)
         if not target_dir.exists():
             raise FileNotFoundError(f"Папка FAWE не найдена: {target_dir}")
-        export_fawe_compatible(str(out_path))
         name = self._normalize_fawe_name(fawe_name or out_path.stem)
+
+        export_fawe_compatible(str(out_path), sponge_version=2)
         target = target_dir / f"{name}.schem"
         shutil.copy2(out_path, target)
+
+        # Also produce v3 variant for servers preferring Sponge v3 loaders.
+        v3_source = out_path.with_name(f"{out_path.stem}.v3.schem")
+        shutil.copy2(out_path, v3_source)
+        export_fawe_compatible(str(v3_source), sponge_version=3)
+        target_v3 = target_dir / f"{name}_v3.schem"
+        shutil.copy2(v3_source, target_v3)
+        try:
+            v3_source.unlink()
+        except Exception:
+            pass
+        self._log(f"FAWE fallback v3 файл: {target_v3}")
+        self._log(f"Команда в игре (v3): //schem load {target_v3.stem}")
+
         return target
 
 

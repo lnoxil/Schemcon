@@ -25,10 +25,18 @@ def _get_compound_root(loaded: object) -> CompoundLike:
     if isinstance(root, nbtlib.Compound):
         return root
     if hasattr(loaded, "__getitem__"):
+        for key in ("", "Schematic"):
+            try:
+                maybe = loaded[key]
+                if isinstance(maybe, nbtlib.Compound):
+                    return maybe
+            except Exception:
+                pass
+    if hasattr(loaded, "items"):
         try:
-            maybe = loaded[""]
-            if isinstance(maybe, nbtlib.Compound):
-                return maybe
+            for _k, maybe in loaded.items():
+                if isinstance(maybe, nbtlib.Compound):
+                    return maybe
         except Exception:
             pass
     raise TypeError("Unsupported NBT root type from nbtlib.load")
@@ -137,7 +145,7 @@ def _active_regions(root: CompoundLike) -> list[tuple[CompoundLike, tuple[int, i
     return active
 
 
-def _build_sponge_from_regions(root: CompoundLike) -> nbtlib.Compound | None:
+def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> nbtlib.Compound | None:
     active = _active_regions(root)
     if not active:
         return None
@@ -231,7 +239,7 @@ def _build_sponge_from_regions(root: CompoundLike) -> nbtlib.Compound | None:
 
     return nbtlib.Compound(
         {
-            "Version": nbtlib.Int(2),
+            "Version": nbtlib.Int(3 if sponge_version == 3 else 2),
             "DataVersion": nbtlib.Int(data_version),
             "Width": nbtlib.Short(width),
             "Height": nbtlib.Short(height),
@@ -247,12 +255,12 @@ def _build_sponge_from_regions(root: CompoundLike) -> nbtlib.Compound | None:
     )
 
 
-def export_fawe_compatible(path: str) -> None:
+def export_fawe_compatible(path: str, sponge_version: int = 2) -> None:
     loaded = nbtlib.load(path)
     root = _get_compound_root(loaded)
     if _find_named_compound(root, "Palette") is not None and "BlockData" in root:
         return
-    sponge = _build_sponge_from_regions(root)
+    sponge = _build_sponge_from_regions(root, sponge_version=sponge_version)
     if sponge is None:
         return
     nbtlib.File(sponge).save(path)

@@ -20,10 +20,12 @@ def _resolve_target(name: str, mapping: dict[str, str]) -> str:
     base, props = _split_blockstate(name)
     mapped_base = mapping.get(base)
     if mapped_base:
-        if props:
-            mapped_name, _ = _split_blockstate(mapped_base)
+        mapped_name, mapped_props = _split_blockstate(mapped_base)
+        if mapped_name == base and props:
             return f"{mapped_name}[{props}]"
-        return mapped_base
+        if mapped_props:
+            return mapped_base
+        return mapped_name
     return name
 
 

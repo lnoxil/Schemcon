@@ -15,7 +15,7 @@ class MatchResult:
 
 def _color_distance(a: tuple[int, int, int] | None, b: tuple[int, int, int] | None) -> float:
     if a is None or b is None:
-        return 1e6
+        return 40.0
     return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
 
 
@@ -32,10 +32,21 @@ def _score(candidate: BlockTraits, source: BlockTraits) -> float:
     if candidate.shape != source.shape:
         score += 120.0
     if candidate.family != source.family:
-        score += 60.0
-    score += (1.0 - _token_similarity(candidate.tokens, source.tokens)) * 25.0
+        score += 80.0
+    score += (1.0 - _token_similarity(candidate.tokens, source.tokens)) * 30.0
     score += _color_distance(candidate.color, source.color)
     return score
+
+
+def _is_safe_match(source: BlockTraits, candidate: BlockTraits, score: float) -> bool:
+    token_sim = _token_similarity(source.tokens, candidate.tokens)
+    same_shape = source.shape == candidate.shape
+    same_family = source.family == candidate.family
+    if same_shape and same_family and score < 140:
+        return True
+    if same_shape and token_sim >= 0.6 and score < 110:
+        return True
+    return False
 
 
 @lru_cache(maxsize=4096)
@@ -49,13 +60,20 @@ def pick_best_match(source_name: str, target_blocks: set[str]) -> MatchResult:
 
     source_traits = _cached_traits(source_name)
     best = None
+    best_traits = None
     for candidate_name in target_blocks:
+        if candidate_name.startswith("#"):
+            continue
         candidate_traits = _cached_traits(candidate_name)
         score = _score(candidate_traits, source_traits)
         if best is None or score < best[0]:
             best = (score, candidate_name)
+            best_traits = candidate_traits
 
-    if best is None:
+    if best is None or best_traits is None:
         return MatchResult(source=source_name, target=source_name, reason="fallback")
+
+    if not _is_safe_match(source_traits, best_traits, best[0]):
+        return MatchResult(source=source_name, target=source_name, reason="no_safe_match")
 
     return MatchResult(source=source_name, target=best[1], reason="nearest")
