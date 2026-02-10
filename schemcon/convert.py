@@ -86,18 +86,26 @@ def _resolve_smart_target(name: str, mapping: dict[str, dict]) -> dict:
     }
 
 
-def build_mapping(source_blocks: set[str], target_blocks: set[str]) -> dict[str, str]:
+def build_mapping(
+    source_blocks: set[str],
+    target_blocks: set[str],
+    gradient_map: dict[str, tuple[int, int, int]] | None = None,
+) -> dict[str, str]:
     mapping = {}
     for block in sorted(source_blocks):
-        result = pick_best_match(block, target_blocks)
+        result = pick_best_match(block, target_blocks, gradient_map=gradient_map)
         mapping[block] = result.target
     return mapping
 
 
-def build_smart_mapping(source_blocks: set[str], target_blocks: set[str]) -> dict[str, dict]:
+def build_smart_mapping(
+    source_blocks: set[str],
+    target_blocks: set[str],
+    gradient_map: dict[str, tuple[int, int, int]] | None = None,
+) -> dict[str, dict]:
     mapping = {}
     for block in sorted(source_blocks):
-        result = pick_best_match(block, target_blocks)
+        result = pick_best_match(block, target_blocks, gradient_map=gradient_map)
         mapping[block] = {
             "target": result.target,
             "reason": result.reason,

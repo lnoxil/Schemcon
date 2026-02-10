@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .categories import categorize_block
 from .convert import convert_schematic
+from .gradient import build_gradient_map, load_gradient_map, save_gradient_map
 from .schem import export_fawe_compatible
 from .matcher import pick_best_match
 from .registry import (
@@ -203,10 +204,11 @@ class SchemconApp(ttk.Frame):
             source_registry = load_registry(version_root / source_version)
             target_registry = load_registry(version_root / target_version)
             target_blocks = set(target_registry.keys())
+            gradient_map = self._build_or_load_gradient_map(source_version, target_version, set(source_registry.keys()), target_blocks)
 
             mapping: dict[str, dict[str, str]] = {}
             for block in sorted(source_registry.keys()):
-                res = pick_best_match(block, target_blocks)
+                res = pick_best_match(block, target_blocks, gradient_map=gradient_map)
                 mapping[block] = {"target": res.target, "reason": res.reason}
 
             mapping_path.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
@@ -274,6 +276,34 @@ class SchemconApp(ttk.Frame):
                 self._log(f"Client jar загружен для текстур: {client_jar.name}")
             except Exception:
                 self._log(f"Client jar для версии {version} недоступен, будет fallback-цвет.")
+
+    def _build_or_load_gradient_map(
+        self,
+        source_version: str,
+        target_version: str,
+        source_blocks: set[str],
+        target_blocks: set[str],
+    ) -> dict[str, tuple[int, int, int]]:
+        gradients_dir = pathlib.Path("data/gradients")
+        source_file = gradients_dir / f"{source_version}.json"
+        target_file = gradients_dir / f"{target_version}.json"
+        source_grad = load_gradient_map(source_file)
+        target_grad = load_gradient_map(target_file)
+
+        source_client = self._version_root / source_version / f"{source_version}.client.jar"
+        target_client = self._version_root / target_version / f"{target_version}.client.jar"
+
+        if source_client.exists() and len(source_grad) < max(32, len(source_blocks) // 4):
+            source_grad = build_gradient_map(source_client, source_blocks)
+            save_gradient_map(source_file, source_grad)
+            self._log(f"Карта градиента source обновлена: {len(source_grad)} текстур")
+
+        if target_client.exists() and len(target_grad) < max(32, len(target_blocks) // 4):
+            target_grad = build_gradient_map(target_client, target_blocks)
+            save_gradient_map(target_file, target_grad)
+            self._log(f"Карта градиента target обновлена: {len(target_grad)} текстур")
+
+        return {**source_grad, **target_grad}
 
     def _normalize_fawe_name(self, raw: str) -> str:
         cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "_", raw).strip("_")

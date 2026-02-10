@@ -109,6 +109,22 @@ def _score(candidate: BlockTraits, source: BlockTraits) -> float:
     return score
 
 
+def _score_with_texture(
+    base_score: float,
+    source_name: str,
+    candidate_name: str,
+    gradient_map: dict[str, tuple[int, int, int]] | None,
+) -> float:
+    if not gradient_map:
+        return base_score
+    source_rgb = gradient_map.get(source_name)
+    cand_rgb = gradient_map.get(candidate_name)
+    if source_rgb is None or cand_rgb is None:
+        return base_score
+    # Texture-average color match has strong weight.
+    return base_score + _color_distance(source_rgb, cand_rgb) * 3.0
+
+
 def _is_safe_match(source: BlockTraits, candidate: BlockTraits, score: float) -> bool:
     if not _is_category_compatible(source.category, candidate.category):
         return False
@@ -161,7 +177,11 @@ def _cached_traits(name: str) -> BlockTraits:
     return categorize_block(name)
 
 
-def pick_best_match(source_name: str, target_blocks: set[str]) -> MatchResult:
+def pick_best_match(
+    source_name: str,
+    target_blocks: set[str],
+    gradient_map: dict[str, tuple[int, int, int]] | None = None,
+) -> MatchResult:
     source_base = source_name.split("[", 1)[0]
     if source_base in RESTRICTED_SOURCE_BLOCKS:
         return MatchResult(source=source_name, target="minecraft:air", reason="restricted_removed", confidence=1.0)
@@ -182,6 +202,7 @@ def pick_best_match(source_name: str, target_blocks: set[str]) -> MatchResult:
             continue
         candidate_traits = _cached_traits(candidate_name)
         score = _score(candidate_traits, source_traits)
+        score = _score_with_texture(score, source_name, candidate_name, gradient_map)
         if _is_category_compatible(source_traits.category, candidate_traits.category):
             compatible_candidates.append((score, candidate_name, candidate_traits))
         else:

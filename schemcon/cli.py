@@ -5,6 +5,7 @@ import json
 import pathlib
 
 from .convert import build_mapping, build_smart_mapping, convert_schematic, convert_schematic_smart
+from .gradient import build_gradient_map, save_gradient_map
 from .gui import launch_gui
 from .registry import (
     download_server_jar,
@@ -32,9 +33,25 @@ def cmd_build_mapping(args: argparse.Namespace) -> None:
     target_registry = load_registry(pathlib.Path(args.target_dir))
     source_blocks = set(source_registry.keys())
     target_blocks = set(target_registry.keys())
+    gradient_map = None
+
+    source_dir = pathlib.Path(args.source_dir)
+    target_dir = pathlib.Path(args.target_dir)
+    source_ver = source_dir.name
+    target_ver = target_dir.name
+    source_client = source_dir / f"{source_ver}.client.jar"
+    target_client = target_dir / f"{target_ver}.client.jar"
+    if source_client.exists() and target_client.exists():
+        source_grad = build_gradient_map(source_client, source_blocks)
+        target_grad = build_gradient_map(target_client, target_blocks)
+        gradient_map = {**source_grad, **target_grad}
+        gradients_dir = pathlib.Path("data/gradients")
+        save_gradient_map(gradients_dir / f"{source_ver}.json", source_grad)
+        save_gradient_map(gradients_dir / f"{target_ver}.json", target_grad)
+        print(f"Texture gradients built: {len(source_grad)} source, {len(target_grad)} target")
 
     if args.smart:
-        mapping = build_smart_mapping(source_blocks, target_blocks)
+        mapping = build_smart_mapping(source_blocks, target_blocks, gradient_map=gradient_map)
 
         total = len(mapping)
         changed = sum(1 for v in mapping.values() if v["changed"])
@@ -51,7 +68,7 @@ def cmd_build_mapping(args: argparse.Namespace) -> None:
         if low_conf > 0:
             print(f"  ⚠️ WARNING: {low_conf} replacements have low confidence!")
     else:
-        mapping_dict = build_mapping(source_blocks, target_blocks)
+        mapping_dict = build_mapping(source_blocks, target_blocks, gradient_map=gradient_map)
         mapping = {key: {"target": value, "reason": "legacy"} for key, value in mapping_dict.items()}
 
     pathlib.Path(args.output).write_text(json.dumps(mapping, indent=2), encoding="utf-8")
