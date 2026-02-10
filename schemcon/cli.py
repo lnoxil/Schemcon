@@ -24,7 +24,7 @@ def cmd_fetch_registry(args: argparse.Namespace) -> None:
     output_dir = pathlib.Path(args.output_dir) / args.version
     server_jar = output_dir / f"{args.version}.jar"
     download_server_jar(version_json, server_jar)
-    _paths, source = ensure_registry_reports(args.version, server_jar, output_dir)
+    _paths, source = ensure_registry_reports(args.version, server_jar, output_dir, version_json=version_json)
     print(f"Saved registry data to {output_dir} (source: {source})")
 
 

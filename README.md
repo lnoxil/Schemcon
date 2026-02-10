@@ -4,7 +4,7 @@
 
 ## Что уже есть
 - Загрузка реестров блоков для выбранной версии.
-- Если в server.jar нет `reports/blocks.json`, используется fallback-источник блоков (PrismarineJS minecraft-data), чтобы `fetch-registry` не падал на старых/проблемных версиях.
+- Если в server.jar нет `reports/blocks.json`, включается цепочка fallback: блоки из server tags, затем из client jar (`assets/minecraft/blockstates`), и только потом внешний источник (PrismarineJS). Это сильно снижает вероятность падения `fetch-registry`.
 - Автоматическое построение mapping по форме, семейству и цвету блока.
 - Конвертация `.schem` через замену палитры.
 

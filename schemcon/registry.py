@@ -29,17 +29,25 @@ def fetch_version_json(version_info: dict, session: requests.Session | None = No
     return response.json()
 
 
-def download_server_jar(version_json: dict, destination: pathlib.Path, session: requests.Session | None = None) -> pathlib.Path:
+def _download_jar(version_json: dict, kind: str, destination: pathlib.Path, session: requests.Session | None = None) -> pathlib.Path:
     session = session or requests.Session()
-    server_info = version_json.get("downloads", {}).get("server")
-    if not server_info:
-        raise ValueError("Server jar download info not available for this version")
+    info = version_json.get("downloads", {}).get(kind)
+    if not info:
+        raise ValueError(f"{kind.capitalize()} jar download info not available for this version")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    response = session.get(server_info["url"], timeout=120)
+    response = session.get(info["url"], timeout=120)
     response.raise_for_status()
     destination.write_bytes(response.content)
     return destination
+
+
+def download_server_jar(version_json: dict, destination: pathlib.Path, session: requests.Session | None = None) -> pathlib.Path:
+    return _download_jar(version_json, "server", destination, session=session)
+
+
+def download_client_jar(version_json: dict, destination: pathlib.Path, session: requests.Session | None = None) -> pathlib.Path:
+    return _download_jar(version_json, "client", destination, session=session)
 
 
 def extract_reports(server_jar: pathlib.Path, output_dir: pathlib.Path) -> list[pathlib.Path]:
@@ -94,33 +102,96 @@ def _fetch_prismarine_blocks(version: str, session: requests.Session | None = No
     return None
 
 
-def ensure_registry_reports(
-    version: str,
-    server_jar: pathlib.Path,
-    output_dir: pathlib.Path,
-    session: requests.Session | None = None,
-) -> tuple[list[pathlib.Path], str]:
-    """Ensure blocks.json exists.
+def _extract_block_names_from_server_tags(server_jar: pathlib.Path) -> set[str]:
+    names: set[str] = set()
+    with zipfile.ZipFile(server_jar) as jar:
+        for path in jar.namelist():
+            if not path.startswith("data/minecraft/tags/blocks/") or not path.endswith(".json"):
+                continue
+            try:
+                payload = json.loads(jar.read(path).decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            for value in payload.get("values", []):
+                if isinstance(value, str) and ":" in value:
+                    names.add(value)
+    return names
 
-    Returns (paths, source) where source is 'server_reports' or 'prismarine_fallback'.
-    """
-    extracted = extract_reports(server_jar, output_dir)
-    if extracted:
-        return extracted, "server_reports"
 
-    blocks = _fetch_prismarine_blocks(version, session=session)
-    if not blocks:
-        raise FileNotFoundError(
-            "No reports found in server jar and fallback block source is unavailable for this version."
-        )
+def _extract_block_names_from_client_jar(client_jar: pathlib.Path) -> set[str]:
+    names: set[str] = set()
+    with zipfile.ZipFile(client_jar) as jar:
+        for path in jar.namelist():
+            prefix = "assets/minecraft/blockstates/"
+            if not path.startswith(prefix) or not path.endswith(".json"):
+                continue
+            block = path[len(prefix) : -len(".json")]
+            if block and "/" not in block:
+                names.add(f"minecraft:{block}")
+    return names
 
+
+def _to_blocks_payload(names: set[str]) -> dict[str, dict]:
+    payload: dict[str, dict] = {}
+    for idx, name in enumerate(sorted(names)):
+        payload[name] = {"id": idx}
+    return payload
+
+
+def _write_registry_files(output_dir: pathlib.Path, blocks: dict[str, dict], source: str) -> tuple[list[pathlib.Path], str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     blocks_path = output_dir / "blocks.json"
     registries_path = output_dir / "registries.json"
     blocks_path.write_text(json.dumps(blocks, indent=2), encoding="utf-8")
     if not registries_path.exists():
         registries_path.write_text("{}", encoding="utf-8")
-    return [blocks_path, registries_path], "prismarine_fallback"
+    return [blocks_path, registries_path], source
+
+
+def ensure_registry_reports(
+    version: str,
+    server_jar: pathlib.Path,
+    output_dir: pathlib.Path,
+    version_json: dict | None = None,
+    session: requests.Session | None = None,
+) -> tuple[list[pathlib.Path], str]:
+    """Ensure blocks.json exists.
+
+    Returns (paths, source).
+    Sources: server_reports | server_tags_fallback | client_blockstates_fallback |
+             prismarine_fallback | generated_fallback.
+    """
+    extracted = extract_reports(server_jar, output_dir)
+    if extracted:
+        return extracted, "server_reports"
+
+    blocks_from_tags = _extract_block_names_from_server_tags(server_jar)
+    if blocks_from_tags:
+        return _write_registry_files(output_dir, _to_blocks_payload(blocks_from_tags), "server_tags_fallback")
+
+    if version_json is not None:
+        client_jar = output_dir / f"{version}.client.jar"
+        try:
+            download_client_jar(version_json, client_jar, session=session)
+            client_names = _extract_block_names_from_client_jar(client_jar)
+            if client_names:
+                return _write_registry_files(output_dir, _to_blocks_payload(client_names), "client_blockstates_fallback")
+        except Exception:
+            pass
+
+    blocks = _fetch_prismarine_blocks(version, session=session)
+    if blocks:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        blocks_path = output_dir / "blocks.json"
+        registries_path = output_dir / "registries.json"
+        blocks_path.write_text(json.dumps(blocks, indent=2), encoding="utf-8")
+        if not registries_path.exists():
+            registries_path.write_text("{}", encoding="utf-8")
+        return [blocks_path, registries_path], "prismarine_fallback"
+
+    raise FileNotFoundError(
+        "No reports found in server jar and all fallback sources were unavailable."
+    )
 
 
 def load_blocks_report(report_path: pathlib.Path) -> dict:

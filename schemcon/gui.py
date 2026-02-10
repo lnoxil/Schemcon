@@ -216,7 +216,7 @@ class SchemconApp(ttk.Frame):
         version_json = fetch_version_json(info)
         jar_path = version_dir / f"{version}.jar"
         download_server_jar(version_json, jar_path)
-        _paths, source = ensure_registry_reports(version, jar_path, version_dir)
+        _paths, source = ensure_registry_reports(version, jar_path, version_dir, version_json=version_json)
         self._log(f"Реестр {version} подготовлен (source={source})")
 
     def _refresh_tree(self) -> None:
