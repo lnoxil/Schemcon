@@ -7,6 +7,7 @@
 - Если в server.jar нет `reports/blocks.json`, включается цепочка fallback: блоки из server tags, затем из client jar (`assets/minecraft/blockstates`), и только потом внешний источник (PrismarineJS). Это сильно снижает вероятность падения `fetch-registry`.
 - Автоматическое построение mapping по форме, семейству и цвету блока.
 - Конвертация `.schem` через замену палитры.
+- Поддержка палитры как в стандартных `.schem` (Sponge `Palette`), так и в Litematic-подобных схемах (`Regions/*/BlockStatePalette`).
 
 ## CLI
 ### 1) Скачать реестры

@@ -189,7 +189,10 @@ class SchemconApp(ttk.Frame):
             for row in palette_mapping:
                 src = row["source"]
                 tgt = row["target"]
-                reason = mapping.get(src, {}).get("reason", "used")
+                base_src = src.split("[", 1)[0]
+                reason = mapping.get(src, {}).get("reason") if isinstance(mapping.get(src), dict) else None
+                if reason is None:
+                    reason = mapping.get(base_src, {}).get("reason") if isinstance(mapping.get(base_src), dict) else "used"
                 self._mapping_rows.append(
                     {
                         "source": src,
