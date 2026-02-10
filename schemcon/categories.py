@@ -43,6 +43,7 @@ SHAPE_RULES = {
     "candle": "candle",
 }
 
+# ИСПРАВЛЕНО: Разделили растения на подкатегории
 FAMILY_RULES = {
     "flower": "flower",
     "sapling": "sapling",
@@ -55,7 +56,6 @@ FAMILY_RULES = {
     "planks": "planks",
     "leaves": "leaves",
     "dirt": "dirt",
-    "grass": "grass",
     "stone": "stone",
     "ore": "ore",
     "sand": "sand",
@@ -68,30 +68,108 @@ FAMILY_RULES = {
     "prismarine": "prismarine",
     "nether": "nether",
     "end": "end",
-    "mushroom": "mushroom",
-    "flowering": "plant",
-    "roots": "plant",
-    "crop": "plant",
-    "bamboo": "plant",
-    "seagrass": "plant",
-    "kelp": "plant",
-    "vine": "plant",
-    "tall_grass": "plant",
-    "short_grass": "plant",
-    "grass": "plant",
-    "fern": "plant",
-    "azalea": "plant",
-    "berry": "plant",
-    "torchflower": "plant",
-    "pitcher": "plant",
 }
 
-SPECIAL_CASES = {
+# НОВОЕ: Специальные категории для точного маппинга
+BLOCK_CATEGORIES = {
+    # Жидкости
+    "water": "liquid_water",
+    "lava": "liquid_lava",
+    "flowing_water": "liquid_water",
+    "flowing_lava": "liquid_lava",
+    
+    # Воздух
     "air": "air",
     "cave_air": "air",
     "void_air": "air",
-    "water": "fluid",
-    "lava": "fluid",
+    
+    # Трава (растение) vs блок травы
+    "grass": "grass_block",  # Блок травы
+    "grass_block": "grass_block",
+    "short_grass": "grass_plant",  # Растение трава
+    "tall_grass": "tall_plant",
+    "fern": "grass_plant",
+    "large_fern": "tall_plant",
+    
+    # Грибы
+    "brown_mushroom": "mushroom_small",  # Маленький гриб
+    "red_mushroom": "mushroom_small",
+    "brown_mushroom_block": "mushroom_block",  # Блок гриба
+    "red_mushroom_block": "mushroom_block",
+    "mushroom_stem": "mushroom_block",
+    
+    # Цветы
+    "dandelion": "flower_small",
+    "poppy": "flower_small",
+    "blue_orchid": "flower_small",
+    "allium": "flower_small",
+    "azure_bluet": "flower_small",
+    "tulip": "flower_small",
+    "oxeye_daisy": "flower_small",
+    "cornflower": "flower_small",
+    "lily_of_the_valley": "flower_small",
+    "wither_rose": "flower_small",
+    "sunflower": "flower_tall",
+    "lilac": "flower_tall",
+    "rose_bush": "flower_tall",
+    "peony": "flower_tall",
+    
+    # Саженцы
+    "oak_sapling": "sapling",
+    "spruce_sapling": "sapling",
+    "birch_sapling": "sapling",
+    "jungle_sapling": "sapling",
+    "acacia_sapling": "sapling",
+    "dark_oak_sapling": "sapling",
+    "cherry_sapling": "sapling",
+    "mangrove_propagule": "sapling",
+    
+    # Культуры
+    "wheat": "crop",
+    "carrots": "crop",
+    "potatoes": "crop",
+    "beetroots": "crop",
+    "sweet_berry_bush": "crop",
+    "torchflower_crop": "crop",
+    "pitcher_crop": "crop",
+    
+    # Водные растения
+    "seagrass": "water_plant",
+    "tall_seagrass": "water_plant",
+    "kelp": "water_plant",
+    "kelp_plant": "water_plant",
+    
+    # Лианы
+    "vine": "vine",
+    "weeping_vines": "vine",
+    "twisting_vines": "vine",
+    "cave_vines": "vine",
+    
+    # Корни
+    "hanging_roots": "roots",
+    "mangrove_roots": "roots",
+    
+    # Бамбук
+    "bamboo": "bamboo",
+    "bamboo_sapling": "bamboo",
+}
+
+# НОВОЕ: Физические свойства блоков
+BLOCK_PROPERTIES = {
+    # Твёрдые блоки (solid)
+    "solid": {
+        "stone", "dirt", "grass_block", "cobblestone", "planks", "log", "wool", 
+        "concrete", "terracotta", "glass", "sand", "gravel", "ore", "brick"
+    },
+    # Растения (transparent, non-solid)
+    "plant": {
+        "grass_plant", "tall_plant", "flower_small", "flower_tall", "sapling",
+        "crop", "water_plant", "vine", "roots", "bamboo", "mushroom_small"
+    },
+    # Жидкости
+    "liquid": {
+        "liquid_water", "liquid_lava"
+    },
 }
 
 
@@ -103,6 +181,8 @@ class BlockTraits:
     family: str
     color: tuple[int, int, int] | None
     tokens: set[str]
+    category: str  # НОВОЕ: детальная категория
+    block_type: str  # НОВОЕ: solid/plant/liquid/air
 
 
 def _detect_color(name: str) -> tuple[int, int, int] | None:
@@ -129,7 +209,37 @@ def _detect_family(tokens: set[str], name: str) -> str:
     for needle, family in FAMILY_RULES.items():
         if needle in name or needle in tokens:
             return family
-    return SPECIAL_CASES.get(name, "generic")
+    return "generic"
+
+
+def _detect_category(base_name: str) -> str:
+    """НОВОЕ: Определяет детальную категорию блока."""
+    # Точное совпадение
+    if base_name in BLOCK_CATEGORIES:
+        return BLOCK_CATEGORIES[base_name]
+    
+    # Частичное совпадение для вариантов
+    for key, category in BLOCK_CATEGORIES.items():
+        if key in base_name:
+            return category
+    
+    return "generic"
+
+
+def _detect_block_type(category: str, family: str) -> str:
+    """НОВОЕ: Определяет физический тип блока."""
+    # Проверяем по категории
+    for block_type, categories in BLOCK_PROPERTIES.items():
+        if category in categories:
+            return block_type
+    
+    # Проверяем по семейству
+    if family in {"flower", "sapling"}:
+        return "plant"
+    if family in {"glass", "wool", "concrete", "stone", "dirt"}:
+        return "solid"
+    
+    return "solid"  # По умолчанию
 
 
 def categorize_block(name: str) -> BlockTraits:
@@ -138,6 +248,9 @@ def categorize_block(name: str) -> BlockTraits:
     shape = _detect_shape(tokens, base_name)
     family = _detect_family(tokens, base_name)
     color = _detect_color(base_name)
+    category = _detect_category(base_name)
+    block_type = _detect_block_type(category, family)
+    
     return BlockTraits(
         name=name,
         base_name=base_name,
@@ -145,4 +258,6 @@ def categorize_block(name: str) -> BlockTraits:
         family=family,
         color=color,
         tokens=tokens,
+        category=category,
+        block_type=block_type,
     )

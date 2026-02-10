@@ -105,7 +105,43 @@ def _decode_packed_indices(data: list[int], count: int, bits: int) -> list[int]:
     return decoded
 
 
+# ИСПРАВЛЕНО: Правильная битовая упаковка вместо VarInt
+def _encode_packed_indices(indices: list[int], bits_per_entry: int) -> bytes:
+    """Упаковка индексов в битовый массив (как в Minecraft chunk data)."""
+    if bits_per_entry <= 0:
+        return bytes()
+    
+    longs_needed = (len(indices) * bits_per_entry + 63) // 64
+    longs = [0] * longs_needed
+    
+    mask = (1 << bits_per_entry) - 1
+    
+    for i, idx in enumerate(indices):
+        value = idx & mask
+        bit_index = i * bits_per_entry
+        long_index = bit_index // 64
+        start = bit_index % 64
+        
+        if long_index < len(longs):
+            longs[long_index] |= value << start
+            
+            overflow = (start + bits_per_entry) - 64
+            if overflow > 0 and long_index + 1 < len(longs):
+                longs[long_index + 1] |= value >> (bits_per_entry - overflow)
+    
+    # Конвертируем в bytes (signed long, big-endian)
+    result = bytearray()
+    for long_val in longs:
+        # Конвертируем в signed int64
+        if long_val >= (1 << 63):
+            long_val -= (1 << 64)
+        result.extend(long_val.to_bytes(8, byteorder='big', signed=True))
+    
+    return bytes(result)
+
+
 def _encode_varint(value: int) -> bytes:
+    """VarInt кодирование (используется только для Sponge v2)."""
     out = bytearray()
     v = value & 0xFFFFFFFF
     while True:
@@ -153,6 +189,7 @@ def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> n
     boxes = [box for _region, box in active]
     total_region_volume = sum(sx * sy * sz for _px, _py, _pz, sx, sy, sz in boxes)
 
+    # ИСПРАВЛЕНО: Более агрессивная проверка на разреженность
     min_x = min(b[0] for b in boxes)
     min_y = min(b[1] for b in boxes)
     min_z = min(b[2] for b in boxes)
@@ -162,10 +199,9 @@ def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> n
     width, height, length = max_x - min_x, max_y - min_y, max_z - min_z
     volume = width * height * length
 
-    # Some FAWE/Litematic exports keep regions far apart in world coordinates,
-    # which creates enormous sparse schematics. Repack regions when too sparse.
+    # ИСПРАВЛЕНО: Снижен порог с 8 до 2 для более агрессивной компактификации
     repacked_sparse = False
-    if total_region_volume > 0 and volume > total_region_volume * 8:
+    if total_region_volume > 0 and volume > total_region_volume * 2:
         repacked_sparse = True
         cursor_x = 0
         repacked: list[tuple[CompoundLike, tuple[int, int, int, int, int, int]]] = []
@@ -228,16 +264,25 @@ def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> n
                         block_ids[gi] = global_palette[state]
 
     palette_compound = nbtlib.Compound({name: nbtlib.Int(idx) for name, idx in global_palette.items()})
-    block_data = bytearray()
-    for idx in block_ids:
-        block_data.extend(_encode_varint(idx))
+    
+    # ИСПРАВЛЕНО: Используем правильную упаковку в зависимости от версии
+    if sponge_version == 3:
+        # Sponge v3: битовая упаковка
+        bits_per_entry = max(2, ceil(log2(len(global_palette))))
+        block_data = _encode_packed_indices(block_ids, bits_per_entry)
+    else:
+        # Sponge v2: VarInt массив (но это все равно большой размер)
+        block_data = bytearray()
+        for idx in block_ids:
+            block_data.extend(_encode_varint(idx))
+        block_data = bytes(block_data)
 
     data_version = 0
     found_dv = root.get("DataVersion")
     if found_dv is not None:
         data_version = int(found_dv)
 
-    return nbtlib.Compound(
+    result = nbtlib.Compound(
         {
             "Version": nbtlib.Int(3 if sponge_version == 3 else 2),
             "DataVersion": nbtlib.Int(data_version),
@@ -250,12 +295,18 @@ def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> n
             "BlockData": nbtlib.ByteArray(block_data),
             "BlockEntities": nbtlib.List[nbtlib.Compound]([]),
             "Entities": nbtlib.List[nbtlib.Compound]([]),
-            "Metadata": nbtlib.Compound({"Author": nbtlib.String("Schemcon")}),
         }
     )
+    
+    # ИСПРАВЛЕНО: Добавляем Metadata только если это v2
+    if sponge_version == 2:
+        result["Metadata"] = nbtlib.Compound({"Name": nbtlib.String(""), "Author": nbtlib.String("Schemcon")})
+    
+    return result
 
 
-def export_fawe_compatible(path: str, sponge_version: int = 2) -> None:
+def export_fawe_compatible(path: str, sponge_version: int = 3) -> None:
+    """ИСПРАВЛЕНО: По умолчанию используем Sponge v3 (более компактный)."""
     loaded = nbtlib.load(path)
     root = _get_compound_root(loaded)
     if _find_named_compound(root, "Palette") is not None and "BlockData" in root:
@@ -301,6 +352,9 @@ class Schematic:
         if found is not None:
             parent, key, _palette = found
             parent[key] = nbtlib.Compound({name: nbtlib.Int(index) for name, index in new_palette.items()})
+            # ИСПРАВЛЕНО: Обновляем PaletteMax
+            if "PaletteMax" in self.root:
+                self.root["PaletteMax"] = nbtlib.Int(len(new_palette))
             return
 
         replacement = {old: new for old, new in new_palette.items()}
@@ -331,4 +385,4 @@ def load_schematic(path: str) -> Schematic:
 
 
 def save_schematic(schematic: Schematic, path: str) -> None:
-    nbtlib.File(schematic.root).save(path)
+    nbtlib.File(schematic.root).save(path, gzipped=True)  # ИСПРАВЛЕНО: Явное сжатие
