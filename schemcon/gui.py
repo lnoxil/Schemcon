@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import zipfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -9,6 +10,7 @@ from .categories import categorize_block
 from .convert import convert_schematic
 from .matcher import pick_best_match
 from .registry import (
+    download_client_jar,
     download_server_jar,
     ensure_registry_reports,
     fetch_version_json,
@@ -23,6 +25,11 @@ class SchemconApp(ttk.Frame):
         super().__init__(master)
         self.pack(fill=tk.BOTH, expand=True)
         self._mapping_rows: list[dict[str, str]] = []
+        self._texture_index: dict[str, set[str]] = {}
+        self._photo_refs: dict[str, tk.PhotoImage] = {}
+        self._version_root = pathlib.Path("data/versions")
+        self._current_source_version = ""
+        self._current_target_version = ""
         self._build_style()
         self._build_layout()
 
@@ -97,16 +104,21 @@ class SchemconApp(ttk.Frame):
         self.tree.configure(yscrollcommand=ybar.set)
         ybar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=8)
 
-        swatch = ttk.Frame(preview)
-        swatch.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
-        self.source_canvas = tk.Canvas(swatch, width=24, height=24, highlightthickness=1)
+        texture = ttk.Frame(preview)
+        texture.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
+        self.source_canvas = tk.Canvas(texture, width=24, height=24, highlightthickness=1)
         self.source_canvas.grid(row=0, column=0, padx=(0, 6))
-        self.source_txt = ttk.Label(swatch, text="Исходный")
-        self.source_txt.grid(row=0, column=1, sticky="w", padx=(0, 16))
-        self.target_canvas = tk.Canvas(swatch, width=24, height=24, highlightthickness=1)
-        self.target_canvas.grid(row=0, column=2, padx=(0, 6))
-        self.target_txt = ttk.Label(swatch, text="Замена")
-        self.target_txt.grid(row=0, column=3, sticky="w")
+        self.source_image = ttk.Label(texture)
+        self.source_image.grid(row=0, column=1, padx=(0, 6))
+        self.source_txt = ttk.Label(texture, text="Исходный")
+        self.source_txt.grid(row=0, column=2, sticky="w", padx=(0, 16))
+
+        self.target_canvas = tk.Canvas(texture, width=24, height=24, highlightthickness=1)
+        self.target_canvas.grid(row=0, column=3, padx=(0, 6))
+        self.target_image = ttk.Label(texture)
+        self.target_image.grid(row=0, column=4, padx=(0, 6))
+        self.target_txt = ttk.Label(texture, text="Замена")
+        self.target_txt.grid(row=0, column=5, sticky="w")
 
         log_frame = ttk.LabelFrame(self, text="Системный лог")
         log_frame.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -155,8 +167,11 @@ class SchemconApp(ttk.Frame):
             if not output_schem:
                 raise ValueError("Укажите путь выходного .schem.")
 
+            self._current_source_version = source_version
+            self._current_target_version = target_version
+
             self._log(f"Старт: {source_version} -> {target_version}")
-            version_root = pathlib.Path("data/versions")
+            version_root = self._version_root
             mapping_root = pathlib.Path("data/mappings")
             mapping_root.mkdir(parents=True, exist_ok=True)
             mapping_path = mapping_root / f"{source_version}-to-{target_version}.json"
@@ -210,17 +225,29 @@ class SchemconApp(ttk.Frame):
 
     def _prepare_version_registry(self, version: str, manifest: dict, version_root: pathlib.Path) -> None:
         version_dir = version_root / version
+        version_dir.mkdir(parents=True, exist_ok=True)
         blocks_path = version_dir / "blocks.json"
-        if blocks_path.exists():
-            self._log(f"Реестр уже есть: {version_dir}")
-            return
 
         info = resolve_version_info(version, manifest)
         version_json = fetch_version_json(info)
+
         jar_path = version_dir / f"{version}.jar"
-        download_server_jar(version_json, jar_path)
-        _paths, source = ensure_registry_reports(version, jar_path, version_dir, version_json=version_json)
-        self._log(f"Реестр {version} подготовлен (source={source})")
+        if not jar_path.exists():
+            download_server_jar(version_json, jar_path)
+
+        if blocks_path.exists():
+            self._log(f"Реестр уже есть: {version_dir}")
+        else:
+            _paths, source = ensure_registry_reports(version, jar_path, version_dir, version_json=version_json)
+            self._log(f"Реестр {version} подготовлен (source={source})")
+
+        client_jar = version_dir / f"{version}.client.jar"
+        if not client_jar.exists():
+            try:
+                download_client_jar(version_json, client_jar)
+                self._log(f"Client jar загружен для текстур: {client_jar.name}")
+            except Exception:
+                self._log(f"Client jar для версии {version} недоступен, будет fallback-цвет.")
 
     def _refresh_tree(self) -> None:
         query = self.filter_var.get().strip().lower()
@@ -251,10 +278,26 @@ class SchemconApp(ttk.Frame):
         src, tgt = vals[0], vals[1]
         self.source_txt.configure(text=src)
         self.target_txt.configure(text=tgt)
-        self._draw_preview(self.source_canvas, src)
-        self._draw_preview(self.target_canvas, tgt)
+        self._draw_preview(self.source_canvas, self.source_image, src, self._current_source_version, "source")
+        self._draw_preview(self.target_canvas, self.target_image, tgt, self._current_target_version, "target")
 
-    def _draw_preview(self, canvas: tk.Canvas, block_name: str) -> None:
+    def _draw_preview(
+        self,
+        canvas: tk.Canvas,
+        image_label: ttk.Label,
+        block_name: str,
+        version: str,
+        slot: str,
+    ) -> None:
+        texture_file = self._find_texture_file(version, block_name)
+        if texture_file is not None:
+            img = tk.PhotoImage(file=str(texture_file))
+            self._photo_refs[slot] = img
+            image_label.configure(image=img)
+            canvas.delete("all")
+            return
+
+        image_label.configure(image="")
         tr = categorize_block(block_name)
         color = tr.color or (120, 120, 120)
         c = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
@@ -262,6 +305,52 @@ class SchemconApp(ttk.Frame):
         canvas.create_rectangle(2, 2, 22, 22, fill=c, outline="#222")
         canvas.create_line(2, 2, 22, 22, fill="#000")
         canvas.create_line(22, 2, 2, 22, fill="#fff")
+
+    def _find_texture_file(self, version: str, block_name: str) -> pathlib.Path | None:
+        if not version:
+            return None
+
+        version_dir = self._version_root / version
+        client_jar = version_dir / f"{version}.client.jar"
+        if not client_jar.exists():
+            return None
+
+        names = self._texture_index.get(version)
+        if names is None:
+            try:
+                with zipfile.ZipFile(client_jar) as jar:
+                    names = set(jar.namelist())
+                self._texture_index[version] = names
+            except Exception:
+                return None
+
+        base = block_name.split("[", 1)[0]
+        if ":" in base:
+            base = base.split(":", 1)[1]
+        candidates = [base, f"{base}_top", f"{base}_side"]
+
+        texture_member = None
+        for candidate in candidates:
+            path = f"assets/minecraft/textures/block/{candidate}.png"
+            if path in names:
+                texture_member = path
+                break
+
+        if texture_member is None:
+            return None
+
+        cache_dir = pathlib.Path("data/texture_cache") / version
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target_file = cache_dir / pathlib.Path(texture_member).name
+        if target_file.exists():
+            return target_file
+
+        try:
+            with zipfile.ZipFile(client_jar) as jar:
+                target_file.write_bytes(jar.read(texture_member))
+            return target_file
+        except Exception:
+            return None
 
 
 def launch_gui() -> None:
