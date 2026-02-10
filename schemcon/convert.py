@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 
 from .matcher import pick_best_match
 from .schem import load_schematic, save_schematic
@@ -209,6 +210,16 @@ def convert_schematic(input_path: str, output_path: str, mapping: dict[str, str]
         counter[mapped] += 1
         palette_mapping.append({"source": name, "target": mapped})
 
+    input_size = Path(input_path).stat().st_size
+    output_size = Path(output_path).stat().st_size
+
+    def _gzip_magic(path: str) -> bool:
+        try:
+            with open(path, "rb") as handle:
+                return handle.read(2) == b"\x1f\x8b"
+        except OSError:
+            return False
+
     return {
         "input": input_path,
         "output": output_path,
@@ -216,6 +227,14 @@ def convert_schematic(input_path: str, output_path: str, mapping: dict[str, str]
         "warnings": warnings,
         "mapped_blocks": dict(counter),
         "palette_mapping": palette_mapping,
+        "file_sizes": {
+            "input_bytes": input_size,
+            "output_bytes": output_size,
+            "delta_bytes": output_size - input_size,
+            "ratio": round((output_size / input_size), 4) if input_size else None,
+            "input_is_gzipped": _gzip_magic(input_path),
+            "output_is_gzipped": _gzip_magic(output_path),
+        },
     }
 
 
@@ -257,6 +276,16 @@ def convert_schematic_smart(input_path: str, output_path: str, mapping: dict[str
     for r in replacements:
         target_counter[r["target"]] += 1
 
+    input_size = Path(input_path).stat().st_size
+    output_size = Path(output_path).stat().st_size
+
+    def _gzip_magic(path: str) -> bool:
+        try:
+            with open(path, "rb") as handle:
+                return handle.read(2) == b"\x1f\x8b"
+        except OSError:
+            return False
+
     return {
         "input": input_path,
         "output": output_path,
@@ -289,4 +318,12 @@ def convert_schematic_smart(input_path: str, output_path: str, mapping: dict[str
             for block, count in target_counter.most_common(20)
         ],
         "all_replacements": replacements,
+        "file_sizes": {
+            "input_bytes": input_size,
+            "output_bytes": output_size,
+            "delta_bytes": output_size - input_size,
+            "ratio": round((output_size / input_size), 4) if input_size else None,
+            "input_is_gzipped": _gzip_magic(input_path),
+            "output_is_gzipped": _gzip_magic(output_path),
+        },
     }
