@@ -17,18 +17,19 @@ SAFE_COLLISION_STATES = (
     "minecraft:glass",
     "minecraft:gravel",
     "minecraft:netherrack",
-    "minecraft:water",
-    "minecraft:lava",
 )
 
 
 def _pick_safe_collision_target(used_targets: dict[str, int], palette_name: str, index: int) -> str:
+    original_owner = used_targets.get(palette_name)
+    if original_owner is None or original_owner == index:
+        return palette_name
     for candidate in SAFE_COLLISION_STATES:
         existing = used_targets.get(candidate)
         if existing is None or existing == index:
             return candidate
-    # Last resort: keep original palette name to avoid dropping this index completely.
-    return palette_name
+    # Last resort: fallback to air and let root sanitization reindex safely.
+    return "minecraft:air"
 
 
 def _split_blockstate(name: str) -> tuple[str, str | None]:
@@ -42,12 +43,16 @@ def _resolve_target(name: str, mapping: dict[str, str]) -> str:
     direct = mapping.get(name)
     if direct:
         return direct
-    base, _props = _split_blockstate(name)
+    base, props = _split_blockstate(name)
     mapped_base = mapping.get(base)
     if mapped_base:
         mapped_name, mapped_props = _split_blockstate(mapped_base)
         if mapped_props:
             return mapped_base
+        # Keep original properties when block base does not change.
+        # This avoids collapsing many valid blockstates into one palette key.
+        if props and mapped_name == base:
+            return name
         return mapped_name
     return "minecraft:air"
 
@@ -57,14 +62,23 @@ def _resolve_smart_target(name: str, mapping: dict[str, dict]) -> dict:
     if isinstance(direct, dict):
         return direct
 
-    base, _props = _split_blockstate(name)
+    base, props = _split_blockstate(name)
     mapped_base = mapping.get(base)
     if isinstance(mapped_base, dict):
+        mapped_target = str(mapped_base.get("target", base))
+        mapped_name, mapped_props = _split_blockstate(mapped_target)
+        if props and not mapped_props and mapped_name == base:
+            return {
+                "target": name,
+                "reason": "preserve_state_props",
+                "confidence": mapped_base.get("confidence", 0.0),
+                "changed": False,
+            }
         return {
-            "target": mapped_base.get("target", base),
+            "target": mapped_target,
             "reason": mapped_base.get("reason", "base_state_fallback"),
             "confidence": mapped_base.get("confidence", 0.0),
-            "changed": mapped_base.get("target", base) != name,
+            "changed": mapped_target != name,
         }
 
     return {
