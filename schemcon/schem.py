@@ -284,7 +284,11 @@ def _sanitize_root_palette_and_blockdata(root: nbtlib.Compound, palette_parent: 
     id_to_state: dict[int, str] = {}
     used_state: dict[str, int] = {}
     for raw_state, raw_id in palette_obj.items():
-        state = _normalize_blockstate_string(str(raw_state))
+        # FAWE can fail with NPE when palette contains a syntactically valid state string
+        # but with unsupported properties for the runtime server version.
+        # For root Sponge palettes, prefer base block IDs only to guarantee resolvable states.
+        raw_name, _raw_props = _parse_blockstate(str(raw_state))
+        state = _normalize_block_name(raw_name)
         state_id = int(raw_id)
         if state_id < 0:
             continue
