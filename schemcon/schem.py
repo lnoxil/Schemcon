@@ -307,6 +307,16 @@ def _sanitize_root_palette_and_blockdata(root: nbtlib.Compound, palette_parent: 
 
     decoded_ids = _decode_block_ids(block_data, volume, max(old_ids) + 1)
     if len(decoded_ids) != volume:
+        # Hard fail-safe: keep schematic loadable in FAWE even when BlockData is corrupted
+        # or encoded in an unsupported way. Better to lose blocks than crash loader with NPE.
+        dense_palette = nbtlib.Compound({"minecraft:air": nbtlib.Int(0)})
+        block_raw = bytearray()
+        for _ in range(volume):
+            block_raw.extend(_encode_varint(0))
+        palette_parent[palette_key] = dense_palette
+        root["BlockData"] = nbtlib.ByteArray(bytes(block_raw))
+        root["PaletteMax"] = nbtlib.Int(1)
+        root["Version"] = nbtlib.Int(2)
         return
 
     remapped_ids: list[int] = []
