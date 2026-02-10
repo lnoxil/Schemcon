@@ -24,7 +24,7 @@ def _resolve_target(name: str, mapping: dict[str, str]) -> str:
         if mapped_props:
             return mapped_base
         return mapped_name
-    return name
+    return "minecraft:air"
 
 
 def _resolve_smart_target(name: str, mapping: dict[str, dict]) -> dict:
@@ -43,10 +43,10 @@ def _resolve_smart_target(name: str, mapping: dict[str, dict]) -> dict:
         }
 
     return {
-        "target": name,
-        "reason": "unmapped",
-        "confidence": 1.0,
-        "changed": False,
+        "target": "minecraft:air",
+        "reason": "unmapped_to_air",
+        "confidence": 0.0,
+        "changed": name != "minecraft:air",
     }
 
 
@@ -80,6 +80,9 @@ def apply_mapping_to_palette(palette: dict[str, int], mapping: dict[str, str]) -
         target = _resolve_target(name, mapping)
         existing = used_targets.get(target)
 
+        if target == "minecraft:air" and name != "minecraft:air":
+            warnings.append(f"Unmapped block {name}; replaced with minecraft:air for FAWE safety.")
+
         if existing is not None and existing != index:
             warnings.append(
                 f"Collision for {name} -> {target}; keeping original name to preserve palette index {index}."
@@ -106,6 +109,18 @@ def apply_smart_mapping_to_palette(
 
         target = mapping_info["target"]
         existing = used_targets.get(target)
+
+        if target == "minecraft:air" and name != "minecraft:air":
+            warnings.append(
+                {
+                    "type": "unmapped_to_air",
+                    "source": name,
+                    "target": target,
+                    "confidence": mapping_info.get("confidence", 0.0),
+                    "reason": mapping_info.get("reason", "unmapped_to_air"),
+                    "message": f"Unmapped block {name}; replaced with minecraft:air for FAWE safety.",
+                }
+            )
 
         if existing is not None and existing != index:
             warnings.append(
