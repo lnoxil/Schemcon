@@ -411,9 +411,20 @@ class Schematic:
         found = _find_named_compound(self.root, "Palette")
         if found is not None:
             parent, key, _palette = found
-            parent[key] = nbtlib.Compound({name: nbtlib.Int(index) for name, index in new_palette.items()})
+            normalized: dict[str, int] = {}
+            used_ids: dict[int, str] = {}
+            for raw_name, raw_index in new_palette.items():
+                safe_name = _normalize_blockstate_string(raw_name)
+                safe_index = int(raw_index)
+                # Keep palette IDs unique and always associated with a resolvable state.
+                if safe_index in used_ids and used_ids[safe_index] != safe_name:
+                    safe_name = "minecraft:air"
+                normalized[safe_name] = nbtlib.Int(safe_index)
+                used_ids[safe_index] = safe_name
+
+            parent[key] = nbtlib.Compound(normalized)
             if "PaletteMax" in self.root:
-                self.root["PaletteMax"] = nbtlib.Int(len(new_palette))
+                self.root["PaletteMax"] = nbtlib.Int(len(parent[key]))
             return
 
         replacement = {old: new for old, new in new_palette.items()}

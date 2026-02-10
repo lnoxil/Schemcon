@@ -85,9 +85,9 @@ def apply_mapping_to_palette(palette: dict[str, int], mapping: dict[str, str]) -
 
         if existing is not None and existing != index:
             warnings.append(
-                f"Collision for {name} -> {target}; keeping original name to preserve palette index {index}."
+                f"Collision for {name} -> {target}; replacing with minecraft:air to keep palette ids valid for FAWE."
             )
-            target = name
+            target = "minecraft:air"
 
         new_palette[target] = index
         used_targets[target] = index
@@ -129,15 +129,15 @@ def apply_smart_mapping_to_palette(
                     "source": name,
                     "target": target,
                     "index": index,
-                    "message": f"Collision: {name} -> {target} at index {index}",
+                    "message": f"Collision: {name} -> {target} at index {index}; replaced with minecraft:air for FAWE safety.",
                 }
             )
-            target = name
+            target = "minecraft:air"
             mapping_info = {
-                "target": name,
+                "target": "minecraft:air",
                 "reason": "collision_fallback",
                 "confidence": 0.0,
-                "changed": False,
+                "changed": name != "minecraft:air",
             }
 
         if mapping_info["changed"] and mapping_info["confidence"] < 0.5:
