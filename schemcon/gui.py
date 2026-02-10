@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
+import shutil
 import zipfile
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -68,12 +70,22 @@ class SchemconApp(ttk.Frame):
         ttk.Entry(form, textvariable=self.output_schem_var).grid(row=3, column=1, sticky="ew", padx=8, pady=6)
         ttk.Button(form, text="Выбрать", command=self._pick_output).grid(row=3, column=2, padx=8, pady=6)
 
+
+        ttk.Label(form, text="FAWE папка schematics (необязательно)").grid(row=4, column=0, sticky="w", padx=8, pady=6)
+        self.fawe_dir_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.fawe_dir_var).grid(row=4, column=1, sticky="ew", padx=8, pady=6)
+        ttk.Button(form, text="Выбрать", command=self._pick_fawe_dir).grid(row=4, column=2, padx=8, pady=6)
+
+        ttk.Label(form, text="Имя файла в FAWE").grid(row=5, column=0, sticky="w", padx=8, pady=6)
+        self.fawe_name_var = tk.StringVar(value="converted")
+        ttk.Entry(form, textvariable=self.fawe_name_var).grid(row=5, column=1, sticky="ew", padx=8, pady=6)
+
         ttk.Button(
             form,
             text="Авто: скачать реестры → построить mapping → конвертировать",
             style="Primary.TButton",
             command=self._run_auto,
-        ).grid(row=4, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 8))
+        ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 8))
 
         preview = ttk.LabelFrame(self, text="Лог mapping (фактически использованные блоки из схемы)")
         preview.grid(row=2, column=0, sticky="nsew", padx=12, pady=6)
@@ -143,6 +155,11 @@ class SchemconApp(ttk.Frame):
         if path:
             self.output_schem_var.set(path)
 
+    def _pick_fawe_dir(self) -> None:
+        path = filedialog.askdirectory()
+        if path:
+            self.fawe_dir_var.set(path)
+
     def _log(self, text: str) -> None:
         self.log.configure(state="normal")
         self.log.insert(tk.END, text + "\n")
@@ -160,6 +177,8 @@ class SchemconApp(ttk.Frame):
             target_version = self.target_version_var.get().strip()
             input_schem = self.input_schem_var.get().strip()
             output_schem = self.output_schem_var.get().strip()
+            fawe_dir = self.fawe_dir_var.get().strip()
+            fawe_name = self.fawe_name_var.get().strip()
             if not source_version or not target_version:
                 raise ValueError("Укажите обе версии.")
             if not input_schem or not pathlib.Path(input_schem).exists():
@@ -198,6 +217,12 @@ class SchemconApp(ttk.Frame):
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
             self._log(f"Схема конвертирована: {output_schem}")
             self._log(f"Отчёт: {report_path}")
+
+            if fawe_dir:
+                fawe_path = self._copy_to_fawe(output_schem, fawe_dir, fawe_name)
+                cmd_name = fawe_path.stem
+                self._log(f"FAWE файл: {fawe_path}")
+                self._log(f"Команда в игре: //schem load {cmd_name}")
 
             palette_mapping = report.get("palette_mapping", [])
             self._mapping_rows = []
@@ -248,6 +273,25 @@ class SchemconApp(ttk.Frame):
                 self._log(f"Client jar загружен для текстур: {client_jar.name}")
             except Exception:
                 self._log(f"Client jar для версии {version} недоступен, будет fallback-цвет.")
+
+    def _normalize_fawe_name(self, raw: str) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "_", raw).strip("_")
+        if not cleaned:
+            cleaned = "converted"
+        return cleaned.lower()
+
+    def _copy_to_fawe(self, output_schem: str, fawe_dir: str, fawe_name: str) -> pathlib.Path:
+        out_path = pathlib.Path(output_schem)
+        if not out_path.exists():
+            raise FileNotFoundError(f"Выходной файл не найден: {out_path}")
+        target_dir = pathlib.Path(fawe_dir)
+        if not target_dir.exists():
+            raise FileNotFoundError(f"Папка FAWE не найдена: {target_dir}")
+        name = self._normalize_fawe_name(fawe_name or out_path.stem)
+        target = target_dir / f"{name}.schem"
+        shutil.copy2(out_path, target)
+        return target
+
 
     def _refresh_tree(self) -> None:
         query = self.filter_var.get().strip().lower()
