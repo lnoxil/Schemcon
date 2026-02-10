@@ -219,8 +219,12 @@ def convert_schematic(input_path: str, output_path: str, mapping: dict[str, str]
 
     counter = Counter()
     palette_mapping = []
+    unchanged = 0
     for name in palette:
         mapped = _resolve_target(name, mapping)
+        if mapped == name:
+            unchanged += 1
+            continue
         counter[mapped] += 1
         palette_mapping.append({"source": name, "target": mapped})
 
@@ -238,6 +242,8 @@ def convert_schematic(input_path: str, output_path: str, mapping: dict[str, str]
         "input": input_path,
         "output": output_path,
         "unique_blocks": len(palette),
+        "unchanged_blocks": unchanged,
+        "changed_blocks": len(palette_mapping),
         "warnings": warnings,
         "mapped_blocks": dict(counter),
         "palette_mapping": palette_mapping,
@@ -260,7 +266,8 @@ def convert_schematic_smart(input_path: str, output_path: str, mapping: dict[str
     schematic.replace_palette(new_palette)
     save_schematic(schematic, output_path)
 
-    changed_count = sum(1 for r in replacements if r["changed"])
+    changed_replacements = [r for r in replacements if r["changed"]]
+    changed_count = len(changed_replacements)
     unchanged_count = len(replacements) - changed_count
 
     confidence_groups = {
@@ -287,7 +294,7 @@ def convert_schematic_smart(input_path: str, output_path: str, mapping: dict[str
             confidence_groups["very_low"].append(r)
 
     target_counter = Counter()
-    for r in replacements:
+    for r in changed_replacements:
         target_counter[r["target"]] += 1
 
     input_size = Path(input_path).stat().st_size
@@ -331,7 +338,7 @@ def convert_schematic_smart(input_path: str, output_path: str, mapping: dict[str
             {"block": block, "count": count}
             for block, count in target_counter.most_common(20)
         ],
-        "all_replacements": replacements,
+        "all_replacements": changed_replacements,
         "file_sizes": {
             "input_bytes": input_size,
             "output_bytes": output_size,
