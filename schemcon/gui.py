@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .categories import categorize_block
 from .convert import convert_schematic
+from .schem import export_fawe_compatible
 from .matcher import pick_best_match
 from .registry import (
     download_client_jar,
@@ -287,6 +288,7 @@ class SchemconApp(ttk.Frame):
         target_dir = pathlib.Path(fawe_dir)
         if not target_dir.exists():
             raise FileNotFoundError(f"Папка FAWE не найдена: {target_dir}")
+        export_fawe_compatible(str(out_path))
         name = self._normalize_fawe_name(fawe_name or out_path.stem)
         target = target_dir / f"{name}.schem"
         shutil.copy2(out_path, target)

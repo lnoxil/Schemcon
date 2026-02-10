@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import ceil, log2
 from typing import Iterable
 
 import nbtlib
@@ -51,6 +52,149 @@ def _iter_regions(root: CompoundLike) -> Iterable[CompoundLike]:
             for region in regions.values():
                 if isinstance(region, nbtlib.Compound):
                     yield region
+
+
+def _to_u64(value: int) -> int:
+    return value & ((1 << 64) - 1)
+
+
+def _decode_packed_indices(data: list[int], count: int, bits: int) -> list[int]:
+    if bits <= 0:
+        return [0] * count
+    mask = (1 << bits) - 1
+    decoded: list[int] = []
+    for i in range(count):
+        bit_index = i * bits
+        long_index = bit_index // 64
+        start = bit_index % 64
+        if long_index >= len(data):
+            decoded.append(0)
+            continue
+        a = _to_u64(int(data[long_index]))
+        value = (a >> start) & mask
+        overflow = (start + bits) - 64
+        if overflow > 0 and long_index + 1 < len(data):
+            b = _to_u64(int(data[long_index + 1]))
+            value |= (b & ((1 << overflow) - 1)) << (bits - overflow)
+        decoded.append(value)
+    return decoded
+
+
+def _encode_varint(value: int) -> bytes:
+    out = bytearray()
+    v = value & 0xFFFFFFFF
+    while True:
+        temp = v & 0x7F
+        v >>= 7
+        if v:
+            out.append(temp | 0x80)
+        else:
+            out.append(temp)
+            break
+    return bytes(out)
+
+
+def _index(x: int, y: int, z: int, sx: int, sz: int) -> int:
+    return x + z * sx + y * sx * sz
+
+
+def _region_box(region: CompoundLike) -> tuple[int, int, int, int, int, int]:
+    pos = region.get("Position", nbtlib.Compound({"x": 0, "y": 0, "z": 0}))
+    size = region.get("Size", nbtlib.Compound({"x": 1, "y": 1, "z": 1}))
+    px, py, pz = int(pos.get("x", 0)), int(pos.get("y", 0)), int(pos.get("z", 0))
+    sx, sy, sz = abs(int(size.get("x", 1))), abs(int(size.get("y", 1))), abs(int(size.get("z", 1)))
+    return px, py, pz, sx, sy, sz
+
+
+def _build_sponge_from_regions(root: CompoundLike) -> nbtlib.Compound | None:
+    regions = list(_iter_regions(root))
+    if not regions:
+        return None
+
+    boxes = [_region_box(r) for r in regions]
+    min_x = min(b[0] for b in boxes)
+    min_y = min(b[1] for b in boxes)
+    min_z = min(b[2] for b in boxes)
+    max_x = max(b[0] + b[3] for b in boxes)
+    max_y = max(b[1] + b[4] for b in boxes)
+    max_z = max(b[2] + b[5] for b in boxes)
+    width, height, length = max_x - min_x, max_y - min_y, max_z - min_z
+    volume = width * height * length
+    if volume <= 0:
+        return None
+
+    global_palette: dict[str, int] = {"minecraft:air": 0}
+    block_ids = [0] * volume
+
+    for region, (px, py, pz, sx, sy, sz) in zip(regions, boxes):
+        palette_list = region.get("BlockStatePalette")
+        packed = region.get("BlockStates")
+        if not palette_list or packed is None:
+            continue
+
+        local_states = [_state_from_litematic_entry(entry) for entry in palette_list if isinstance(entry, nbtlib.Compound)]
+        if not local_states:
+            continue
+
+        bits = max(2, ceil(log2(max(1, len(local_states)))))
+        local_volume = sx * sy * sz
+        decoded = _decode_packed_indices(list(packed), local_volume, bits)
+
+        for y in range(sy):
+            for z in range(sz):
+                for x in range(sx):
+                    i_local = _index(x, y, z, sx, sz)
+                    if i_local >= len(decoded):
+                        continue
+                    p_idx = decoded[i_local]
+                    if p_idx < 0 or p_idx >= len(local_states):
+                        state = "minecraft:air"
+                    else:
+                        state = local_states[p_idx]
+
+                    if state not in global_palette:
+                        global_palette[state] = len(global_palette)
+                    gi = _index((px - min_x) + x, (py - min_y) + y, (pz - min_z) + z, width, length)
+                    if 0 <= gi < volume:
+                        block_ids[gi] = global_palette[state]
+
+    palette_compound = nbtlib.Compound({name: nbtlib.Int(idx) for name, idx in global_palette.items()})
+    block_data = bytearray()
+    for idx in block_ids:
+        block_data.extend(_encode_varint(idx))
+
+    data_version = 0
+    found_dv = root.get("DataVersion")
+    if found_dv is not None:
+        data_version = int(found_dv)
+
+    return nbtlib.Compound(
+        {
+            "Version": nbtlib.Int(2),
+            "DataVersion": nbtlib.Int(data_version),
+            "Width": nbtlib.Short(width),
+            "Height": nbtlib.Short(height),
+            "Length": nbtlib.Short(length),
+            "Offset": nbtlib.IntArray([0, 0, 0]),
+            "PaletteMax": nbtlib.Int(len(global_palette)),
+            "Palette": palette_compound,
+            "BlockData": nbtlib.ByteArray(block_data),
+            "BlockEntities": nbtlib.List[nbtlib.Compound]([]),
+            "Entities": nbtlib.List[nbtlib.Compound]([]),
+            "Metadata": nbtlib.Compound({"Author": nbtlib.String("Schemcon")}),
+        }
+    )
+
+
+def export_fawe_compatible(path: str) -> None:
+    loaded = nbtlib.load(path)
+    root = loaded.root
+    if _find_named_compound(root, "Palette") is not None and "BlockData" in root:
+        return
+    sponge = _build_sponge_from_regions(root)
+    if sponge is None:
+        return
+    nbtlib.File(sponge).save(path)
 
 
 @dataclass
@@ -113,7 +257,7 @@ class Schematic:
 
 
 def load_schematic(path: str) -> Schematic:
-    root = nbtlib.load(path)
+    root = nbtlib.load(path).root
     return Schematic(root=root)
 
 
