@@ -225,6 +225,113 @@ def _encode_varint(value: int) -> bytes:
     return bytes(out)
 
 
+def _decode_varint_stream(raw: bytes, expected_count: int) -> list[int]:
+    values: list[int] = []
+    idx = 0
+    size = len(raw)
+    while idx < size and len(values) < expected_count:
+        shift = 0
+        value = 0
+        while True:
+            if idx >= size:
+                return values
+            byte = raw[idx]
+            idx += 1
+            value |= (byte & 0x7F) << shift
+            if not (byte & 0x80):
+                break
+            shift += 7
+            if shift > 35:
+                return values
+        values.append(value)
+    return values
+
+
+def _decode_block_ids(block_data: nbtlib.ByteArray, volume: int, palette_size: int) -> list[int]:
+    raw = bytes((int(b) & 0xFF) for b in block_data)
+    decoded = _decode_varint_stream(raw, volume)
+    if len(decoded) == volume:
+        return decoded
+
+    # Fallback for packed-bit style payloads.
+    if volume > 0 and len(raw) % 8 == 0 and palette_size > 0:
+        longs: list[int] = []
+        for i in range(0, len(raw), 8):
+            chunk = raw[i : i + 8]
+            signed = int.from_bytes(chunk, byteorder="big", signed=True)
+            longs.append(signed)
+        bits = max(2, ceil(log2(max(1, palette_size))))
+        packed = _decode_packed_indices(longs, volume, bits)
+        if len(packed) == volume:
+            return packed
+
+    return []
+
+
+def _sanitize_root_palette_and_blockdata(root: nbtlib.Compound, palette_parent: nbtlib.Compound, palette_key: str) -> None:
+    palette_obj = palette_parent.get(palette_key)
+    block_data = root.get("BlockData")
+    if not isinstance(palette_obj, nbtlib.Compound) or not isinstance(block_data, nbtlib.ByteArray):
+        return
+
+    width = int(root.get("Width", 0) or 0)
+    height = int(root.get("Height", 0) or 0)
+    length = int(root.get("Length", 0) or 0)
+    volume = width * height * length
+    if volume <= 0:
+        return
+
+    id_to_state: dict[int, str] = {}
+    used_state: dict[str, int] = {}
+    for raw_state, raw_id in palette_obj.items():
+        state = _normalize_blockstate_string(str(raw_state))
+        state_id = int(raw_id)
+        if state_id < 0:
+            continue
+
+        if state_id in id_to_state and id_to_state[state_id] != state:
+            state = _pick_safe_collision_state(used_state, state_id)
+
+        owner = used_state.get(state)
+        if owner is not None and owner != state_id:
+            state = _pick_safe_collision_state(used_state, state_id)
+
+        id_to_state[state_id] = state
+        used_state[state] = state_id
+
+    if not id_to_state:
+        id_to_state = {0: "minecraft:air"}
+
+    old_ids = sorted(id_to_state.keys())
+    dense_map = {old_id: new_id for new_id, old_id in enumerate(old_ids)}
+
+    decoded_ids = _decode_block_ids(block_data, volume, max(old_ids) + 1)
+    if len(decoded_ids) != volume:
+        return
+
+    remapped_ids: list[int] = []
+    for old_id in decoded_ids:
+        if old_id in dense_map:
+            remapped_ids.append(dense_map[old_id])
+        else:
+            remapped_ids.append(0)
+
+    dense_palette = nbtlib.Compound()
+    for old_id in old_ids:
+        state = id_to_state[old_id]
+        dense_palette[state] = nbtlib.Int(dense_map[old_id])
+
+    block_raw = bytearray()
+    for block_id in remapped_ids:
+        block_raw.extend(_encode_varint(block_id))
+
+    palette_parent[palette_key] = dense_palette
+    root["BlockData"] = nbtlib.ByteArray(bytes(block_raw))
+    root["PaletteMax"] = nbtlib.Int(len(dense_palette))
+    # Force Sponge v2 payload style for maximum FAWE compatibility.
+    root["Version"] = nbtlib.Int(2)
+
+
 def _index(x: int, y: int, z: int, sx: int, sz: int) -> int:
     return x + z * sx + y * sx * sz
 
@@ -451,6 +558,7 @@ class Schematic:
             parent[key] = nbtlib.Compound(normalized)
             if "PaletteMax" in self.root:
                 self.root["PaletteMax"] = nbtlib.Int(len(parent[key]))
+            _sanitize_root_palette_and_blockdata(self.root, parent, key)
             return
 
         replacement = {old: new for old, new in new_palette.items()}
