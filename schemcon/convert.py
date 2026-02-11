@@ -48,6 +48,7 @@ LEGACY_BLOCK_ALIASES = {
     "minecraft:acacia_double_slab": "minecraft:acacia_slab",
     "minecraft:dark_oak_double_slab": "minecraft:dark_oak_slab",
     "minecraft:cobblestone_double_slab": "minecraft:cobblestone_slab",
+    "minecraft:brick_double_slab": "minecraft:brick_slab",
 }
 
 for _color in [
@@ -126,11 +127,19 @@ def _sanitize_mapped_target(target: str, allowed_targets: set[str] | None = None
     if allowed_targets is None:
         return normalized
 
+    # Registry-based allow-lists may contain legacy ids; compare on canonicalized forms too.
+    canonical_allowed: set[str] = set()
+    canonical_allowed_bases: set[str] = set()
+    for raw in allowed_targets:
+        canon = _canonicalize_blockstate_name(_normalize_blockstate_string(raw))
+        canonical_allowed.add(canon)
+        canonical_allowed_bases.add(_as_base_blockstate(canon))
+
     # Registry-based allow-lists generally contain only base block ids.
     # If base exists in target version, keep full blockstate properties.
-    if normalized in allowed_targets:
+    if normalized in allowed_targets or normalized in canonical_allowed:
         return normalized
-    if base in allowed_targets:
+    if base in allowed_targets or base in canonical_allowed_bases:
         return normalized
     return "minecraft:air"
 def _decode_varint_block_data(data: bytes, expected_count: int) -> list[int]:

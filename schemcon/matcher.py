@@ -93,6 +93,12 @@ DISCOURAGED_PATTERN_TOKENS = {
     "shulker_box",
 }
 
+DISCOURAGED_UTILITY_TOKENS = {
+    "hopper",
+    "brewing_stand",
+    "cauldron",
+}
+
 WOOD_FALLBACK_ORDER = [
     "minecraft:oak_planks",
     "minecraft:spruce_planks",
@@ -369,6 +375,11 @@ def _should_skip_patterned_candidate(source_name: str, candidate_name: str) -> b
     return not _is_discouraged_pattern_block(src)
 
 
+def _is_utility_block_name(name: str) -> bool:
+    base = _as_key(name)
+    return any(token in base for token in DISCOURAGED_UTILITY_TOKENS)
+
+
 def _same_shape_candidates(source_name: str, target_blocks: Set[str]) -> list[str]:
     src_traits = categorize_block(source_name)
     out: list[str] = []
@@ -436,6 +447,8 @@ def _pick_shape_safe_match(
         if _as_key(candidate_base) == "air":
             continue
         if _should_skip_patterned_candidate(source_name, candidate_base):
+            continue
+        if _is_utility_block_name(candidate_base) and not _is_utility_block_name(source_name):
             continue
         candidate_traits = categorize_block(candidate_base)
 
@@ -590,6 +603,8 @@ def _pick_relaxed_safe_match(
         if _as_key(candidate_base) == "air":
             continue
         if _should_skip_patterned_candidate(source_name, candidate_base):
+            continue
+        if _is_utility_block_name(candidate_base) and not _is_utility_block_name(source_name):
             continue
         candidate_traits = categorize_block(candidate_base)
 
@@ -779,6 +794,8 @@ def pick_best_match(
     for cand in _same_shape_candidates(source_name, target_blocks):
         if _should_skip_patterned_candidate(source_name, cand):
             continue
+        if _is_utility_block_name(cand) and not _is_utility_block_name(source_name):
+            continue
         if not _strict_category_compatible(source_name, cand):
             continue
         if not is_safe_replacement_strict(source_name, cand):
@@ -803,7 +820,11 @@ def pick_best_match(
     # Absolute final fallback (still avoid air unless truly absent in target set)
     for cand in sorted(target_blocks):
         base = cand.split("[", 1)[0]
-        if _as_key(base) != "air" and not _should_skip_patterned_candidate(source_name, base):
+        if (
+            _as_key(base) != "air"
+            and not _should_skip_patterned_candidate(source_name, base)
+            and not (_is_utility_block_name(base) and not _is_utility_block_name(source_name))
+        ):
             return MatchResult(source=source_name, target=base, reason="last_resort_any_block", confidence=0.25)
 
     return MatchResult(source=source_name, target="minecraft:air", reason="no_match", confidence=0.0)
