@@ -25,8 +25,22 @@ def _as_base_blockstate(name: str) -> str:
 
 
 
+LEGACY_BLOCK_ALIASES = {
+    "minecraft:grass": "minecraft:grass_block",
+    "minecraft:grass_path": "minecraft:dirt_path",
+}
+
+
+def _canonicalize_blockstate_name(value: str) -> str:
+    base, props = _split_blockstate(value)
+    canonical_base = LEGACY_BLOCK_ALIASES.get(base, base)
+    if props and canonical_base == base:
+        return value
+    return canonical_base
+
+
 def _sanitize_mapped_target(target: str, allowed_targets: set[str] | None = None) -> str:
-    normalized = _normalize_blockstate_string(target)
+    normalized = _canonicalize_blockstate_name(_normalize_blockstate_string(target))
     base = _as_base_blockstate(normalized)
 
     if allowed_targets is None:

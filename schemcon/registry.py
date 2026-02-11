@@ -8,6 +8,12 @@ MANIFEST_URL = "https://launchermeta.mojang.com/mc/game/version_manifest.json"
 PRISMARINE_BLOCKS_URL = "https://raw.githubusercontent.com/PrismarineJS/minecraft-data/master/data/pc/{version}/blocks.json"
 
 
+LEGACY_BLOCK_ALIASES = {
+    "minecraft:grass": "minecraft:grass_block",
+    "minecraft:grass_path": "minecraft:dirt_path",
+}
+
+
 def fetch_version_manifest(session: requests.Session | None = None) -> dict:
     session = session or requests.Session()
     response = session.get(MANIFEST_URL, timeout=30)
@@ -218,8 +224,10 @@ def _normalize_block_key(name: str) -> str:
     if key.startswith("#"):
         return key
     if ":" not in key:
-        return f"minecraft:{key}"
-    return key
+        key = f"minecraft:{key}"
+    return LEGACY_BLOCK_ALIASES.get(key, key)
+
+
 def load_blocks_report(report_path: pathlib.Path) -> dict:
     data = json.loads(report_path.read_text(encoding="utf-8"))
     payload = data["blocks"] if "blocks" in data else data
