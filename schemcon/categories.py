@@ -132,6 +132,8 @@ BLOCK_CATEGORIES = {
     "potted": "potted_plant",
     "flower_pot": "potted_plant",
     "decorated_pot": "pot_block",
+    "banner": "banner",
+    "wall_banner": "banner",
     "command_block": "command_block",
     "chain_command_block": "command_block",
     "repeating_command_block": "command_block",
@@ -167,6 +169,9 @@ BLOCK_PROPERTIES = {
         "bamboo",
         "mushroom_small",
         "potted_plant",
+    },
+    "banner": {
+        "banner",
     },
     "liquid": {
         "liquid_water",

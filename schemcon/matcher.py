@@ -23,6 +23,27 @@ def _color_distance(left: tuple[int, int, int], right: tuple[int, int, int]) -> 
     return sum((a - b) ** 2 for a, b in zip(left, right)) ** 0.5
 
 
+def _strict_category_compatible(source_name: str, candidate_name: str) -> bool:
+    """Hard category guardrails (leaves/water/banners/liquids)."""
+    source_strict_cat = get_block_strict_category(source_name)
+    target_strict_cat = get_block_strict_category(candidate_name)
+
+    if source_strict_cat == "leaves" and target_strict_cat != "leaves":
+        return False
+    if source_strict_cat == "water" and target_strict_cat != "water":
+        return False
+    if source_strict_cat in {"banner", "wall_banner"} and target_strict_cat not in {"banner", "wall_banner"}:
+        return False
+
+    # Prevent non-special blocks from turning into leaves/water/banners.
+    if source_strict_cat not in {"leaves", "water"} and target_strict_cat in {"leaves", "water"}:
+        return False
+    if source_strict_cat not in {"banner", "wall_banner"} and target_strict_cat in {"banner", "wall_banner"}:
+        return False
+
+    return True
+
+
 def _pick_shape_safe_match(
     source_name: str,
     target_blocks: Set[str],
@@ -46,20 +67,15 @@ def _pick_shape_safe_match(
         candidate_traits = categorize_block(candidate_base)
 
         # ULTRA STRICT SAFETY CHECKS
-        # 1. Leaves can ONLY become leaves!
-        source_strict_cat = get_block_strict_category(source_name)
-        target_strict_cat = get_block_strict_category(candidate_base)
-        
-        if source_strict_cat == "leaves" and target_strict_cat != "leaves":
-            continue  # FORBIDDEN: leaves -> non-leaves
-        
-        # 2. Water can ONLY become water!
-        if source_strict_cat == "water" and target_strict_cat != "water":
-            continue  # FORBIDDEN: water -> non-water
-        
-        # 3. Use strict safety rules
+        if not _strict_category_compatible(source_name, candidate_base):
+            continue
+
+        # Use strict safety rules
         if not is_safe_replacement_strict(source_name, candidate_base):
             continue
+
+        source_strict_cat = get_block_strict_category(source_name)
+        target_strict_cat = get_block_strict_category(candidate_base)
 
         # Hard safety: do not map non-liquid blocks to liquids and vice versa.
         if source_traits.block_type == "liquid" and candidate_traits.block_type != "liquid":
@@ -87,12 +103,16 @@ def _pick_shape_safe_match(
         if source_traits.category == candidate_traits.category:
             score += 4.0
 
+        # Keep strict categories together for sensitive blocks.
+        if source_strict_cat == target_strict_cat:
+            score += 2.5
+
         # Try to keep color tone when texture gradients are available.
         cand_color = None
         if gradient_map:
             cand_color = gradient_map.get(candidate_key) or gradient_map.get(f"minecraft:{candidate_key}")
         if src_color and cand_color:
-            score += max(0.0, 3.0 - (_color_distance(src_color, cand_color) / 90.0))
+            score += max(0.0, 5.0 - (_color_distance(src_color, cand_color) / 70.0))
 
         # Token overlap helps with wood variants (oak/cherry/etc.) and similar naming.
         overlap = len(source_traits.tokens & candidate_traits.tokens)
@@ -127,11 +147,16 @@ def _is_risky_category(name: str) -> bool:
 
 
 def _pick_relaxed_safe_match(source_name: str, target_blocks: Set[str]) -> Optional[str]:
-    """Fallback matcher that still enforces no liquid/non-liquid cross mapping."""
+    """Fallback matcher that still enforces strict category guardrails."""
     source_traits = categorize_block(source_name)
     for candidate in sorted(target_blocks):
         candidate_base = candidate.split("[", 1)[0]
         candidate_traits = categorize_block(candidate_base)
+
+        if not _strict_category_compatible(source_name, candidate_base):
+            continue
+        if not is_safe_replacement_strict(source_name, candidate_base):
+            continue
 
         if source_traits.block_type == "liquid" and candidate_traits.block_type != "liquid":
             continue

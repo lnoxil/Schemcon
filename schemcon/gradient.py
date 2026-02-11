@@ -113,11 +113,39 @@ def _decode_png_rgb(data: bytes) -> tuple[int, int, int] | None:
     return total[0] // pixels, total[1] // pixels, total[2] // pixels
 
 
-def _texture_candidates(block_name: str) -> list[str]:
+def _texture_candidates(block_name: str) -> list[tuple[str, float]]:
+    """Return texture candidates with weights for pseudo-3D averaging.
+
+    We prioritize side-like textures so color matching reflects how blocks look
+    in 3D builds (walls/facades), not only top-down map color.
+    """
     base = block_name.split("[", 1)[0]
     if ":" in base:
         base = base.split(":", 1)[1]
-    return [base, f"{base}_top", f"{base}_side", f"{base}_front"]
+
+    candidates = [
+        (base, 2.0),
+        (f"{base}_side", 2.5),
+        (f"{base}_front", 2.0),
+        (f"{base}_back", 2.0),
+        (f"{base}_north", 2.0),
+        (f"{base}_south", 2.0),
+        (f"{base}_east", 2.0),
+        (f"{base}_west", 2.0),
+        (f"{base}_top", 1.0),
+        (f"{base}_bottom", 1.0),
+        (f"{base}_end", 1.0),
+    ]
+
+    # Keep first occurrence only.
+    seen: set[str] = set()
+    unique: list[tuple[str, float]] = []
+    for name, weight in candidates:
+        if name in seen:
+            continue
+        seen.add(name)
+        unique.append((name, weight))
+    return unique
 
 
 def build_gradient_map(client_jar: pathlib.Path, block_names: set[str]) -> dict[str, tuple[int, int, int]]:
@@ -128,7 +156,8 @@ def build_gradient_map(client_jar: pathlib.Path, block_names: set[str]) -> dict[
     with zipfile.ZipFile(client_jar) as jar:
         members = set(jar.namelist())
         for block_name in block_names:
-            for candidate in _texture_candidates(block_name):
+            weighted_colors: list[tuple[tuple[int, int, int], float]] = []
+            for candidate, weight in _texture_candidates(block_name):
                 member = f"assets/minecraft/textures/block/{candidate}.png"
                 if member not in members:
                     continue
@@ -137,8 +166,16 @@ def build_gradient_map(client_jar: pathlib.Path, block_names: set[str]) -> dict[
                 except Exception:
                     rgb = None
                 if rgb is not None:
-                    result[block_name] = rgb
-                    break
+                    weighted_colors.append((rgb, weight))
+
+            if weighted_colors:
+                total_weight = sum(weight for _rgb, weight in weighted_colors)
+                if total_weight <= 0:
+                    continue
+                r = int(sum(rgb[0] * weight for rgb, weight in weighted_colors) / total_weight)
+                g = int(sum(rgb[1] * weight for rgb, weight in weighted_colors) / total_weight)
+                b = int(sum(rgb[2] * weight for rgb, weight in weighted_colors) / total_weight)
+                result[block_name] = (r, g, b)
     return result
 
 
