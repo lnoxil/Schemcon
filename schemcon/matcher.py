@@ -83,6 +83,7 @@ EXACT_BLOCK_MAPPINGS = {
     "creeper_wall_head": "minecraft:player_wall_head",
     "dragon_head": "minecraft:player_head",
     "dragon_wall_head": "minecraft:player_wall_head",
+    "iron_trapdoor": "minecraft:oak_trapdoor",
 }
 
 PREFER_FAMILIES = {"concrete", "wool"}
@@ -379,6 +380,15 @@ def _should_skip_patterned_candidate(source_name: str, candidate_name: str) -> b
     return not _is_discouraged_pattern_block(src)
 
 
+def _should_skip_terracotta_candidate(source_name: str, candidate_name: str) -> bool:
+    """Avoid terracotta replacements unless source itself is terracotta-like."""
+    src_family = categorize_block(source_name).family
+    cand_family = categorize_block(candidate_name).family
+    if cand_family != "terracotta":
+        return False
+    return src_family != "terracotta"
+
+
 def _is_utility_block_name(name: str) -> bool:
     base = _as_key(name)
     return any(token in base for token in DISCOURAGED_UTILITY_TOKENS)
@@ -451,6 +461,8 @@ def _pick_shape_safe_match(
         if _as_key(candidate_base) == "air":
             continue
         if _should_skip_patterned_candidate(source_name, candidate_base):
+            continue
+        if _should_skip_terracotta_candidate(source_name, candidate_base):
             continue
         if _is_utility_block_name(candidate_base) and not _is_utility_block_name(source_name):
             continue
@@ -607,6 +619,8 @@ def _pick_relaxed_safe_match(
         if _as_key(candidate_base) == "air":
             continue
         if _should_skip_patterned_candidate(source_name, candidate_base):
+            continue
+        if _should_skip_terracotta_candidate(source_name, candidate_base):
             continue
         if _is_utility_block_name(candidate_base) and not _is_utility_block_name(source_name):
             continue
@@ -798,6 +812,8 @@ def pick_best_match(
     for cand in _same_shape_candidates(source_name, target_blocks):
         if _should_skip_patterned_candidate(source_name, cand):
             continue
+        if _should_skip_terracotta_candidate(source_name, cand):
+            continue
         if _is_utility_block_name(cand) and not _is_utility_block_name(source_name):
             continue
         if not _strict_category_compatible(source_name, cand):
@@ -827,6 +843,7 @@ def pick_best_match(
         if (
             _as_key(base) != "air"
             and not _should_skip_patterned_candidate(source_name, base)
+            and not _should_skip_terracotta_candidate(source_name, base)
             and not (_is_utility_block_name(base) and not _is_utility_block_name(source_name))
         ):
             return MatchResult(source=source_name, target=base, reason="last_resort_any_block", confidence=0.25)
