@@ -33,9 +33,8 @@ class SchemconApp(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master)
         self.pack(fill=tk.BOTH, expand=True)
+
         self._mapping_rows: list[dict[str, str]] = []
-        self._texture_index: dict[str, set[str]] = {}
-        self._photo_refs: dict[str, tk.PhotoImage] = {}
         self._version_root = pathlib.Path("data/versions")
         self._current_source_version = ""
         self._current_target_version = ""
@@ -43,12 +42,18 @@ class SchemconApp(ttk.Frame):
         self._pending_mapping: dict[str, dict[str, str]] = {}
         self._pending_output_schem = ""
         self._pending_input_schem = ""
+        self._current_gradient_map: dict[str, tuple[int, int, int]] = {}
+
+        self._jar_member_index: dict[str, set[str]] = {}
+        self._photo_refs: dict[str, tk.PhotoImage] = {}
+        self._block_icon_cache: dict[str, tk.PhotoImage] = {}
+        self._pair_icon_cache: dict[str, tk.PhotoImage] = {}
+
         self._build_style()
         self._build_layout()
         self._preload_local_gradient_maps()
 
     def _preload_local_gradient_maps(self) -> None:
-        """Autonomous local gradient synchronization at GUI startup."""
         try:
             stats = refresh_gradient_maps_for_local_versions(
                 self._version_root,
@@ -120,7 +125,7 @@ class SchemconApp(ttk.Frame):
             command=self._apply_mapping,
         ).grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
 
-        preview = ttk.LabelFrame(self, text="Лог mapping (подсветка замен + ручная правка цели)")
+        preview = ttk.LabelFrame(self, text="Лог mapping (текстуры рядом с тегами)")
         preview.grid(row=2, column=0, sticky="nsew", padx=12, pady=6)
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(1, weight=1)
@@ -138,43 +143,28 @@ class SchemconApp(ttk.Frame):
         ttk.Button(top_controls, text="Экспорт лога цветов", command=self._export_color_log).grid(row=0, column=2)
 
         cols = ("source", "target", "reason", "src_props", "dst_props")
-        self.tree = ttk.Treeview(preview, columns=cols, show="headings", height=12)
-        self.tree.heading("source", text="Исходный")
-        self.tree.heading("target", text="Замена")
+        self.tree = ttk.Treeview(preview, columns=cols, show="tree headings", height=16)
+        self.tree.heading("#0", text="Текстуры src|dst")
+        self.tree.column("#0", width=110, anchor="center")
+
+        self.tree.heading("source", text="Исходный тег")
+        self.tree.heading("target", text="Тег замены")
         self.tree.heading("reason", text="Причина")
         self.tree.heading("src_props", text="Свойства исходного")
         self.tree.heading("dst_props", text="Свойства замены")
-        self.tree.column("source", width=220)
-        self.tree.column("target", width=220)
+        self.tree.column("source", width=320)
+        self.tree.column("target", width=320)
         self.tree.column("reason", width=120, anchor="center")
-        self.tree.column("src_props", width=250)
-        self.tree.column("dst_props", width=250)
+        self.tree.column("src_props", width=240)
+        self.tree.column("dst_props", width=240)
+
         self.tree.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=8)
-        self.tree.bind("<<TreeviewSelect>>", self._on_select)
-        self.tree.bind("<Motion>", self._on_hover)
-        self.tree.bind("<Leave>", lambda _e: None)
         self.tree.tag_configure("changed", background="#fff5cc")
         self.tree.tag_configure("same", background="#eaf7ea")
 
         ybar = ttk.Scrollbar(preview, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=ybar.set)
         ybar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=8)
-
-        texture = ttk.Frame(preview)
-        texture.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
-        self.source_canvas = tk.Canvas(texture, width=24, height=24, highlightthickness=1)
-        self.source_canvas.grid(row=0, column=0, padx=(0, 6))
-        self.source_image = ttk.Label(texture)
-        self.source_image.grid(row=0, column=1, padx=(0, 6))
-        self.source_txt = ttk.Label(texture, text="Исходный")
-        self.source_txt.grid(row=0, column=2, sticky="w", padx=(0, 16))
-
-        self.target_canvas = tk.Canvas(texture, width=24, height=24, highlightthickness=1)
-        self.target_canvas.grid(row=0, column=3, padx=(0, 6))
-        self.target_image = ttk.Label(texture)
-        self.target_image.grid(row=0, column=4, padx=(0, 6))
-        self.target_txt = ttk.Label(texture, text="Замена")
-        self.target_txt.grid(row=0, column=5, sticky="w")
 
         log_frame = ttk.LabelFrame(self, text="Системный лог")
         log_frame.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -210,13 +200,30 @@ class SchemconApp(ttk.Frame):
         self.log.configure(state="disabled")
         self.log.see(tk.END)
 
+    def _normalize_block(self, block_name: str) -> str:
+        base = block_name.split("[", 1)[0]
+        return base if ":" in base else f"minecraft:{base}"
+
+    def _color_from_gradient_map(self, block_name: str) -> tuple[int, int, int] | None:
+        base = self._normalize_block(block_name)
+        bare = base.replace("minecraft:", "")
+        candidates = [block_name, base, bare, f"minecraft:{bare}"]
+        for key in candidates:
+            value = self._current_gradient_map.get(key)
+            if value:
+                return value
+        return None
+
     def _block_color(self, block_name: str) -> tuple[int, int, int]:
+        sampled = self._color_from_gradient_map(block_name)
+        if sampled:
+            return sampled
         tr = categorize_block(block_name)
         return tr.color or (120, 120, 120)
 
     def _props(self, block_name: str) -> str:
         tr = categorize_block(block_name)
-        color = tr.color or (120, 120, 120)
+        color = self._block_color(block_name)
         return f"shape={tr.shape}, family={tr.family}, color={color}"
 
     def _run_auto(self) -> None:
@@ -263,22 +270,25 @@ class SchemconApp(ttk.Frame):
             target_blocks = set(target_registry.keys())
             self._current_target_blocks = target_blocks
 
-            gradient_map = self._build_or_load_gradient_map(source_version, target_version, source_blocks, target_blocks)
-            self._log(f"3D-градиент цветов загружен: {len(gradient_map)} блоков")
+            self._current_gradient_map = self._build_or_load_gradient_map(
+                source_version, target_version, source_blocks, target_blocks
+            )
+            self._log(f"3D-градиент цветов загружен: {len(self._current_gradient_map)} блоков")
 
             input_palette = load_schematic(input_schem).palette
             palette_blocks = set(input_palette.keys())
 
             mapping: dict[str, dict[str, str]] = {}
             for block in sorted(palette_blocks):
-                base_block = block.split("[", 1)[0]
-                if base_block in target_blocks:
+                base_block = self._normalize_block(block)
+                base_bare = base_block.replace("minecraft:", "")
+                if base_block in target_blocks or base_bare in target_blocks:
                     mapping[block] = {"target": block, "reason": "exists_in_target"}
                     continue
 
-                res = pick_best_match(block, target_blocks, gradient_map=gradient_map)
+                res = pick_best_match(block, target_blocks, gradient_map=self._current_gradient_map)
                 if res.target == "minecraft:air" and "[" in block:
-                    base_res = pick_best_match(base_block, target_blocks, gradient_map=gradient_map)
+                    base_res = pick_best_match(base_block, target_blocks, gradient_map=self._current_gradient_map)
                     if base_res.target != "minecraft:air":
                         res = base_res
                 mapping[block] = {"target": res.target, "reason": res.reason}
@@ -288,11 +298,10 @@ class SchemconApp(ttk.Frame):
             self._log(f"Mapping сохранён: {mapping_path}")
 
             self._mapping_rows = []
+            self._pair_icon_cache.clear()
             for src, meta in sorted(mapping.items()):
                 tgt = meta.get("target", "minecraft:air")
-                src_color = self._block_color(src)
-                tgt_color = self._block_color(tgt)
-                changed = src.split("[", 1)[0] != tgt.split("[", 1)[0]
+                changed = self._normalize_block(src) != self._normalize_block(tgt)
                 self._mapping_rows.append(
                     {
                         "source": src,
@@ -300,13 +309,13 @@ class SchemconApp(ttk.Frame):
                         "reason": meta.get("reason", "mapped"),
                         "src_props": self._props(src),
                         "dst_props": self._props(tgt),
-                        "src_color": str(src_color),
-                        "dst_color": str(tgt_color),
+                        "src_color": str(self._block_color(src)),
+                        "dst_color": str(self._block_color(tgt)),
                         "changed": "1" if changed else "0",
                     }
                 )
             self._refresh_tree()
-            self._log("Проверьте подсвеченные строки, при необходимости измените цель и нажмите подтверждение конвертации.")
+            self._log("Проверьте строки, при необходимости исправьте цель и нажмите подтверждение.")
             messagebox.showinfo("Mapping готов", "Проверьте замену блоков в таблице и нажмите 'Подтвердить mapping и конвертировать'.")
         except Exception as exc:  # noqa: BLE001
             self._log(f"Ошибка: {exc}")
@@ -369,8 +378,9 @@ class SchemconApp(ttk.Frame):
         if ":" not in new_target:
             new_target = f"minecraft:{new_target}"
 
-        base_target = new_target.split("[", 1)[0]
-        if base_target not in self._current_target_blocks:
+        base_target = self._normalize_block(new_target)
+        base_target_bare = base_target.replace("minecraft:", "")
+        if base_target not in self._current_target_blocks and base_target_bare not in self._current_target_blocks:
             messagebox.showerror("Некорректная цель", f"Блок отсутствует в target версии: {base_target}")
             return
 
@@ -386,7 +396,7 @@ class SchemconApp(ttk.Frame):
             row["reason"] = "manual_override"
             row["dst_props"] = self._props(new_target)
             row["dst_color"] = str(self._block_color(new_target))
-            row["changed"] = "1" if source_block.split("[", 1)[0] != new_target.split("[", 1)[0] else "0"
+            row["changed"] = "1" if self._normalize_block(source_block) != self._normalize_block(new_target) else "0"
             break
 
         self._refresh_tree()
@@ -503,17 +513,130 @@ class SchemconApp(ttk.Frame):
 
         return target
 
+    def _get_jar_members(self, version: str) -> set[str]:
+        cached = self._jar_member_index.get(version)
+        if cached is not None:
+            return cached
+
+        client_jar = self._version_root / version / f"{version}.client.jar"
+        if not client_jar.exists():
+            self._jar_member_index[version] = set()
+            return set()
+
+        try:
+            with zipfile.ZipFile(client_jar) as jar:
+                members = set(jar.namelist())
+            self._jar_member_index[version] = members
+            return members
+        except Exception:
+            self._jar_member_index[version] = set()
+            return set()
+
+    def _find_texture_member(self, version: str, block_name: str) -> str | None:
+        members = self._get_jar_members(version)
+        if not members:
+            return None
+
+        base = self._normalize_block(block_name).replace("minecraft:", "")
+        candidates = [base, f"{base}_side", f"{base}_front", f"{base}_top", f"{base}_end"]
+        for candidate in candidates:
+            member = f"assets/minecraft/textures/block/{candidate}.png"
+            if member in members:
+                return member
+        return None
+
+    def _extract_texture_file(self, version: str, member: str) -> pathlib.Path | None:
+        cache_dir = pathlib.Path("data/texture_cache") / version
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target_file = cache_dir / pathlib.Path(member).name
+        if target_file.exists():
+            return target_file
+
+        client_jar = self._version_root / version / f"{version}.client.jar"
+        if not client_jar.exists():
+            return None
+        try:
+            with zipfile.ZipFile(client_jar) as jar:
+                target_file.write_bytes(jar.read(member))
+            return target_file
+        except Exception:
+            return None
+
+    def _solid_icon(self, color: tuple[int, int, int]) -> tk.PhotoImage:
+        key = f"solid:{color}"
+        cached = self._block_icon_cache.get(key)
+        if cached:
+            return cached
+
+        img = tk.PhotoImage(width=16, height=16)
+        fill = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+        img.put(fill, to=(0, 0, 16, 16))
+        img.put("#1f1f1f", to=(0, 0, 16, 1))
+        img.put("#1f1f1f", to=(0, 0, 1, 16))
+        img.put("#d9d9d9", to=(15, 0, 16, 16))
+        img.put("#d9d9d9", to=(0, 15, 16, 16))
+        self._block_icon_cache[key] = img
+        return img
+
+    def _texture_icon(self, version: str, block_name: str) -> tk.PhotoImage:
+        cache_key = f"{version}:{self._normalize_block(block_name)}"
+        cached = self._block_icon_cache.get(cache_key)
+        if cached:
+            return cached
+
+        member = self._find_texture_member(version, block_name)
+        if member:
+            texture = self._extract_texture_file(version, member)
+            if texture:
+                try:
+                    img = tk.PhotoImage(file=str(texture))
+                    if img.width() > 16 or img.height() > 16:
+                        sx = max(1, img.width() // 16)
+                        sy = max(1, img.height() // 16)
+                        img = img.subsample(sx, sy)
+                    self._block_icon_cache[cache_key] = img
+                    return img
+                except Exception:
+                    pass
+
+        fallback = self._solid_icon(self._block_color(block_name))
+        self._block_icon_cache[cache_key] = fallback
+        return fallback
+
+    def _pair_icon(self, source_block: str, target_block: str) -> tk.PhotoImage:
+        key = f"{self._current_source_version}:{source_block}|{self._current_target_version}:{target_block}"
+        cached = self._pair_icon_cache.get(key)
+        if cached:
+            return cached
+
+        src_img = self._texture_icon(self._current_source_version, source_block)
+        tgt_img = self._texture_icon(self._current_target_version, target_block)
+
+        pair = tk.PhotoImage(width=36, height=16)
+        pair.put("#f0f0f0", to=(0, 0, 36, 16))
+        pair.tk.call(pair, "copy", src_img, "-to", 0, 0)
+        pair.put("#555555", to=(17, 0, 19, 16))
+        pair.tk.call(pair, "copy", tgt_img, "-to", 20, 0)
+        self._pair_icon_cache[key] = pair
+        return pair
+
     def _refresh_tree(self) -> None:
         query = self.filter_var.get().strip().lower()
         for item in self.tree.get_children():
             self.tree.delete(item)
-        for row in self._mapping_rows:
+
+        for idx, row in enumerate(self._mapping_rows):
             if query and query not in row["source"].lower() and query not in row["target"].lower():
                 continue
             tag = "changed" if row.get("changed") == "1" else "same"
+            icon = self._pair_icon(row["source"], row["target"])
+            icon_key = f"row-{idx}"
+            self._photo_refs[icon_key] = icon
             self.tree.insert(
                 "",
                 tk.END,
+                text="",
+                image=icon,
                 values=(
                     row["source"],
                     row["target"],
@@ -524,105 +647,11 @@ class SchemconApp(ttk.Frame):
                 tags=(tag,),
             )
 
-    def _update_preview(self, src: str, tgt: str) -> None:
-        self.source_txt.configure(text=src)
-        self.target_txt.configure(text=tgt)
-        self._draw_preview(self.source_canvas, self.source_image, src, self._current_source_version, "source")
-        self._draw_preview(self.target_canvas, self.target_image, tgt, self._current_target_version, "target")
-
-    def _on_select(self, _event: tk.Event) -> None:
-        selected = self.tree.selection()
-        if not selected:
-            return
-        vals = self.tree.item(selected[0], "values")
-        if not vals:
-            return
-        self._update_preview(vals[0], vals[1])
-
-    def _on_hover(self, event: tk.Event) -> None:
-        row_id = self.tree.identify_row(event.y)
-        if not row_id:
-            return
-        vals = self.tree.item(row_id, "values")
-        if not vals:
-            return
-        self._update_preview(vals[0], vals[1])
-
-    def _draw_preview(
-        self,
-        canvas: tk.Canvas,
-        image_label: ttk.Label,
-        block_name: str,
-        version: str,
-        slot: str,
-    ) -> None:
-        texture_file = self._find_texture_file(version, block_name)
-        if texture_file is not None:
-            img = tk.PhotoImage(file=str(texture_file))
-            self._photo_refs[slot] = img
-            image_label.configure(image=img)
-            canvas.delete("all")
-            return
-
-        image_label.configure(image="")
-        color = self._block_color(block_name)
-        c = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
-        canvas.delete("all")
-        canvas.create_rectangle(2, 2, 22, 22, fill=c, outline="#222")
-        canvas.create_line(2, 2, 22, 22, fill="#000")
-        canvas.create_line(22, 2, 2, 22, fill="#fff")
-
-    def _find_texture_file(self, version: str, block_name: str) -> pathlib.Path | None:
-        if not version:
-            return None
-
-        version_dir = self._version_root / version
-        client_jar = version_dir / f"{version}.client.jar"
-        if not client_jar.exists():
-            return None
-
-        names = self._texture_index.get(version)
-        if names is None:
-            try:
-                with zipfile.ZipFile(client_jar) as jar:
-                    names = set(jar.namelist())
-                self._texture_index[version] = names
-            except Exception:
-                return None
-
-        base = block_name.split("[", 1)[0]
-        if ":" in base:
-            base = base.split(":", 1)[1]
-        candidates = [base, f"{base}_side", f"{base}_front", f"{base}_top"]
-
-        texture_member = None
-        for candidate in candidates:
-            path = f"assets/minecraft/textures/block/{candidate}.png"
-            if path in names:
-                texture_member = path
-                break
-
-        if texture_member is None:
-            return None
-
-        cache_dir = pathlib.Path("data/texture_cache") / version
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        target_file = cache_dir / pathlib.Path(texture_member).name
-        if target_file.exists():
-            return target_file
-
-        try:
-            with zipfile.ZipFile(client_jar) as jar:
-                target_file.write_bytes(jar.read(texture_member))
-            return target_file
-        except Exception:
-            return None
-
 
 def launch_gui() -> None:
     root = tk.Tk()
     root.title("Schemcon")
-    root.geometry("1300x900")
+    root.geometry("1450x920")
     SchemconApp(root)
     root.mainloop()
 
