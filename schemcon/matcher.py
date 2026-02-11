@@ -87,6 +87,44 @@ def _pick_shape_safe_match(
     return best[1] if best else None
 
 
+def _is_risky_category(name: str) -> bool:
+    traits = categorize_block(name)
+    if traits.block_type == "liquid":
+        return True
+    return traits.family in {
+        "flower",
+        "sapling",
+        "leaves",
+        "grass",
+        "mushroom",
+    } or traits.category in {
+        "grass_block",
+        "grass_plant",
+        "tall_plant",
+        "flower_small",
+        "flower_tall",
+        "water_plant",
+        "mushroom_small",
+        "mushroom_block",
+    }
+
+
+def _pick_relaxed_safe_match(source_name: str, target_blocks: Set[str]) -> Optional[str]:
+    """Fallback matcher that still enforces no liquid/non-liquid cross mapping."""
+    source_traits = categorize_block(source_name)
+    for candidate in sorted(target_blocks):
+        candidate_base = candidate.split("[", 1)[0]
+        candidate_traits = categorize_block(candidate_base)
+
+        if source_traits.block_type == "liquid" and candidate_traits.block_type != "liquid":
+            continue
+        if source_traits.block_type != "liquid" and candidate_traits.block_type == "liquid":
+            continue
+        if source_traits.shape == candidate_traits.shape:
+            return candidate_base
+    return None
+
+
 @dataclass(frozen=True)
 class MatchResult:
     source: str
@@ -128,7 +166,15 @@ def pick_best_match(
     # Block doesn't exist in target - need to find replacement
     best_match = _pick_shape_safe_match(source_name, target_blocks, gradient_map=gradient_map)
     if not best_match:
-        best_match = find_best_block_match(source_name, target_blocks)
+        best_match = _pick_relaxed_safe_match(source_name, target_blocks)
+    if not best_match and not _is_risky_category(source_name):
+        # Extra fallback only for non-risky blocks.
+        candidate = find_best_block_match(source_name, target_blocks)
+        if candidate:
+            src_type = categorize_block(source_name).block_type
+            cand_type = categorize_block(candidate).block_type
+            if src_type == cand_type:
+                best_match = candidate
     
     if best_match:
         # Calculate confidence based on category match

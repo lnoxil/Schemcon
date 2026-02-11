@@ -41,6 +41,23 @@ class SchemconApp(ttk.Frame):
         self._current_target_version = ""
         self._build_style()
         self._build_layout()
+        self._preload_local_gradient_maps()
+
+
+    def _preload_local_gradient_maps(self) -> None:
+        """Autonomous local gradient synchronization at GUI startup."""
+        try:
+            stats = refresh_gradient_maps_for_local_versions(
+                self._version_root,
+                pathlib.Path("data/gradients"),
+            )
+            if stats:
+                self._log(
+                    "Авто-инициализация градиент-карт: "
+                    + ", ".join(f"{ver}={count}" for ver, count in sorted(stats.items()))
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Авто-инициализация градиентов пропущена: {exc}")
 
     def _build_style(self) -> None:
         style = ttk.Style()

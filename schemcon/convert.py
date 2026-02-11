@@ -50,10 +50,12 @@ def _sanitize_mapped_target(target: str, allowed_targets: set[str] | None = None
     if allowed_targets is None:
         return normalized
 
+    # Registry-based allow-lists generally contain only base block ids.
+    # If base exists in target version, keep full blockstate properties.
     if normalized in allowed_targets:
         return normalized
     if base in allowed_targets:
-        return base
+        return normalized
     return "minecraft:air"
 def _decode_varint_block_data(data: bytes, expected_count: int) -> list[int]:
     values: list[int] = []
@@ -190,7 +192,13 @@ def _rebuild_nested_palette_blockdata(
 def _resolve_target(name: str, mapping: dict[str, str], allowed_targets: set[str] | None = None) -> str:
     direct = mapping.get(name)
     if direct:
-        return _sanitize_mapped_target(direct, allowed_targets)
+        direct_name, direct_props = _split_blockstate(direct)
+        if direct_props:
+            return _sanitize_mapped_target(direct, allowed_targets)
+        # Most generated mappings are base-id only; preserve orientation/shape
+        # from source blockstate when possible.
+        with_props = _apply_source_properties(name, _as_base_blockstate(direct_name))
+        return _sanitize_mapped_target(with_props, allowed_targets)
     base, _props = _split_blockstate(name)
     mapped_base = mapping.get(base)
     if mapped_base:
