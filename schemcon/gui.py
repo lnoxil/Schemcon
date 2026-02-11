@@ -168,7 +168,7 @@ class SchemconApp(ttk.Frame):
 
         tk.Checkbutton(
             form,
-            text="Замена ступенек на блок при плохом совпадении цвета (>50%)",
+            text="Замена ступенек на блок при плохом совпадении цвета (>30%)",
             variable=self._stairs_to_block_fallback_var,
             onvalue=True,
             offvalue=False,
@@ -477,7 +477,7 @@ class SchemconApp(ttk.Frame):
                     tgt_traits = categorize_block(res.target)
                     if src_traits.shape == "stairs" and tgt_traits.shape == "stairs":
                         mismatch = self._stairs_mismatch_ratio(block, res.target)
-                        if mismatch > 0.5:
+                        if mismatch > 0.3:
                             block_fallback = self._fallback_block_for_stair(block, target_blocks)
                             if block_fallback:
                                 res = type(res)(

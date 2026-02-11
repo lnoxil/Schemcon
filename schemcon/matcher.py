@@ -43,6 +43,7 @@ COLORLESS_BLOCK_MAPPINGS = {
     "tall_grass": "tall_grass",
     "fern": "fern",
     "large_fern": "large_fern",
+    "lily_pad": "lily_pad",
 }
 
 EXACT_BLOCK_MAPPINGS = {
@@ -84,6 +85,8 @@ EXACT_BLOCK_MAPPINGS = {
     "dragon_head": "minecraft:player_head",
     "dragon_wall_head": "minecraft:player_wall_head",
     "iron_trapdoor": "minecraft:oak_trapdoor",
+    "bamboo": "minecraft:oak_fence",
+    "bamboo_sapling": "minecraft:oak_fence",
 }
 
 PREFER_FAMILIES = {"concrete", "wool"}
@@ -345,6 +348,11 @@ def _special_soft_match(source_name: str, target_blocks: Set[str]) -> Optional[s
 
     if src == "moss_carpet":
         for cand in ["minecraft:green_carpet", "minecraft:green_wool", "minecraft:mossy_cobblestone", "minecraft:grass"]:
+            clean = _as_key(cand)
+            if cand in target_blocks or clean in target_blocks:
+                return cand
+    if src in {"lily_pad", "waterlily"}:
+        for cand in ["minecraft:lily_pad", "minecraft:waterlily"]:
             clean = _as_key(cand)
             if cand in target_blocks or clean in target_blocks:
                 return cand
