@@ -129,10 +129,14 @@ class SchemconApp(ttk.Frame):
         self.fawe_name_var = tk.StringVar(value="converted")
         ttk.Entry(form, textvariable=self.fawe_name_var).grid(row=3, column=1, sticky="ew", padx=8, pady=6)
 
-        ttk.Checkbutton(
+        tk.Checkbutton(
             form,
             text="Замена ступенек на блок при плохом совпадении цвета (>50%)",
             variable=self._stairs_to_block_fallback_var,
+            onvalue=True,
+            offvalue=False,
+            anchor="w",
+            justify="left",
         ).grid(row=4, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 6))
 
         ttk.Button(
@@ -293,6 +297,39 @@ class SchemconApp(ttk.Frame):
         dist = (dr * dr + dg * dg + db * db) ** 0.5
         return dist / 441.6729559300637  # sqrt(255^2 * 3)
 
+    def _explicit_color_token(self, block_name: str) -> str | None:
+        base = self._normalize_block(block_name).replace("minecraft:", "")
+        order = [
+            "light_blue",
+            "light_gray",
+            "white",
+            "orange",
+            "magenta",
+            "yellow",
+            "lime",
+            "pink",
+            "gray",
+            "cyan",
+            "purple",
+            "blue",
+            "brown",
+            "green",
+            "red",
+            "black",
+        ]
+        for token in order:
+            if token in base:
+                return token
+        return None
+
+    def _stairs_mismatch_ratio(self, source_block: str, target_block: str) -> float:
+        ratio = self._color_mismatch_ratio(self._block_color(source_block), self._block_color(target_block))
+        src_color = self._explicit_color_token(source_block)
+        tgt_color = self._explicit_color_token(target_block)
+        if src_color and tgt_color and src_color != tgt_color:
+            return max(ratio, 0.75)
+        return ratio
+
     def _fallback_block_for_stair(self, source_block: str, target_blocks: set[str]) -> str | None:
         src_color = self._block_color(source_block)
         src_traits = categorize_block(source_block)
@@ -393,7 +430,7 @@ class SchemconApp(ttk.Frame):
                     src_traits = categorize_block(block)
                     tgt_traits = categorize_block(res.target)
                     if src_traits.shape == "stairs" and tgt_traits.shape == "stairs":
-                        mismatch = self._color_mismatch_ratio(self._block_color(block), self._block_color(res.target))
+                        mismatch = self._stairs_mismatch_ratio(block, res.target)
                         if mismatch > 0.5:
                             block_fallback = self._fallback_block_for_stair(block, target_blocks)
                             if block_fallback:

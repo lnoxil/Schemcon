@@ -100,6 +100,7 @@ DISCOURAGED_UTILITY_TOKENS = {
     "anvil",
     "lantern",
     "redstone_lamp",
+    "daylight_detector",
 }
 
 WOOD_FALLBACK_ORDER = [
