@@ -116,6 +116,15 @@ WOOD_FALLBACK_ORDER = [
     "minecraft:chest",
 ]
 
+WOOD_TRAPDOOR_FALLBACK_ORDER = [
+    "minecraft:oak_trapdoor",
+    "minecraft:spruce_trapdoor",
+    "minecraft:birch_trapdoor",
+    "minecraft:jungle_trapdoor",
+    "minecraft:acacia_trapdoor",
+    "minecraft:dark_oak_trapdoor",
+]
+
 HEAD_FALLBACK_ORDER = [
     "minecraft:player_head",
     "minecraft:skeleton_skull",
@@ -310,6 +319,12 @@ def _manual_override_match(source_name: str, target_blocks: Set[str]) -> Optiona
 def _special_soft_match(source_name: str, target_blocks: Set[str]) -> Optional[str]:
     src = _as_key(source_name)
 
+    if "trapdoor" in src and "iron" not in src:
+        for cand in WOOD_TRAPDOOR_FALLBACK_ORDER:
+            clean = _as_key(cand)
+            if cand in target_blocks or clean in target_blocks:
+                return cand
+
     if src in {"player_head", "head"}:
         for cand in HEAD_FALLBACK_ORDER:
             clean = _as_key(cand)
@@ -395,6 +410,15 @@ def _is_utility_block_name(name: str) -> bool:
     return any(token in base for token in DISCOURAGED_UTILITY_TOKENS)
 
 
+def _is_iron_trapdoor_candidate_forbidden(source_name: str, candidate_name: str) -> bool:
+    src = _as_key(source_name)
+    cand = _as_key(candidate_name)
+    if cand != "iron_trapdoor":
+        return False
+    # Keep iron trapdoor only for explicit iron-like sources.
+    return "iron" not in src
+
+
 def _same_shape_candidates(source_name: str, target_blocks: Set[str]) -> list[str]:
     src_traits = categorize_block(source_name)
     out: list[str] = []
@@ -464,6 +488,8 @@ def _pick_shape_safe_match(
         if _should_skip_patterned_candidate(source_name, candidate_base):
             continue
         if _should_skip_terracotta_candidate(source_name, candidate_base):
+            continue
+        if _is_iron_trapdoor_candidate_forbidden(source_name, candidate_base):
             continue
         if _is_utility_block_name(candidate_base) and not _is_utility_block_name(source_name):
             continue
@@ -622,6 +648,8 @@ def _pick_relaxed_safe_match(
         if _should_skip_patterned_candidate(source_name, candidate_base):
             continue
         if _should_skip_terracotta_candidate(source_name, candidate_base):
+            continue
+        if _is_iron_trapdoor_candidate_forbidden(source_name, candidate_base):
             continue
         if _is_utility_block_name(candidate_base) and not _is_utility_block_name(source_name):
             continue
@@ -815,6 +843,8 @@ def pick_best_match(
             continue
         if _should_skip_terracotta_candidate(source_name, cand):
             continue
+        if _is_iron_trapdoor_candidate_forbidden(source_name, cand):
+            continue
         if _is_utility_block_name(cand) and not _is_utility_block_name(source_name):
             continue
         if not _strict_category_compatible(source_name, cand):
@@ -845,6 +875,7 @@ def pick_best_match(
             _as_key(base) != "air"
             and not _should_skip_patterned_candidate(source_name, base)
             and not _should_skip_terracotta_candidate(source_name, base)
+            and not _is_iron_trapdoor_candidate_forbidden(source_name, base)
             and not (_is_utility_block_name(base) and not _is_utility_block_name(source_name))
         ):
             return MatchResult(source=source_name, target=base, reason="last_resort_any_block", confidence=0.25)
