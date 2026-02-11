@@ -35,10 +35,11 @@ COLORLESS_BLOCK_MAPPINGS = {
     "big_dripleaf_stem": "oak_fence",
     "small_dripleaf_stem": "oak_fence",
     "spore_blossom": "vine",
-    "moss_carpet": "vine",
+    "moss_carpet": "green_carpet",
+    "moss_block": "grass_block",
     "azalea": "oak_sapling",
     "flowering_azalea": "oak_sapling",
-    "short_grass": "short_grass",
+    "short_grass": "grass",
     "tall_grass": "tall_grass",
     "fern": "fern",
     "large_fern": "large_fern",
@@ -71,6 +72,9 @@ EXACT_BLOCK_MAPPINGS = {
     "potted_flowering_azalea_bush": "minecraft:potted_azalea_bush",
     "potted_azalea_bush": "minecraft:potted_fern",
 }
+
+PREFER_FAMILIES = {"concrete", "wool"}
+DISCOURAGED_FAMILIES = {"terracotta"}
 
 COLOR_TOKEN_MAP = {
     "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
@@ -253,6 +257,16 @@ def _manual_override_match(source_name: str, target_blocks: Set[str]) -> Optiona
     return None
 
 
+def _special_soft_match(source_name: str, target_blocks: Set[str]) -> Optional[str]:
+    src = _as_key(source_name)
+    if src == "moss_carpet":
+        for cand in ["minecraft:green_carpet", "minecraft:green_wool", "minecraft:mossy_cobblestone", "minecraft:grass"]:
+            clean = _as_key(cand)
+            if cand in target_blocks or clean in target_blocks:
+                return cand
+    return None
+
+
 def _same_shape_candidates(source_name: str, target_blocks: Set[str]) -> list[str]:
     src_traits = categorize_block(source_name)
     out: list[str] = []
@@ -285,11 +299,13 @@ def _pick_copper_stage_match(source_name: str, target_blocks: Set[str]) -> Optio
     elif "exposed" in src:
         bases = ["cut_sandstone", "smooth_sandstone", "sandstone"]
     else:
-        bases = ["cut_red_sandstone", "red_sandstone", "terracotta"]
+        bases = ["cut_red_sandstone", "red_sandstone", "sandstone"]
 
     candidates: list[str] = []
     for block in target_blocks:
         base = _as_key(block)
+        if "glazed_terracotta" in base:
+            continue
         if shape and not base.endswith(shape):
             continue
         if any(k in base for k in bases):
@@ -380,6 +396,11 @@ def _pick_shape_safe_match(
         # Preserve families (wood, stone, leaves, etc.) where possible.
         if source_traits.family == candidate_traits.family:
             score += 3.5
+
+        if candidate_traits.family in PREFER_FAMILIES:
+            score += 1.8
+        if candidate_traits.family in DISCOURAGED_FAMILIES or "glazed_terracotta" in candidate_clean:
+            score -= 3.2
 
         # Penalize crossing broad groups (mineral/wood/plant).
         if _family_group(source_traits.family) != _family_group(candidate_traits.family):
@@ -497,6 +518,11 @@ def _pick_relaxed_safe_match(
             score += 3.0
         if source_traits.family == candidate_traits.family:
             score += 2.0
+
+        if candidate_traits.family in PREFER_FAMILIES:
+            score += 1.2
+        if candidate_traits.family in DISCOURAGED_FAMILIES or "glazed_terracotta" in candidate_clean:
+            score -= 2.4
         if source_traits.category == candidate_traits.category:
             score += 2.5
 
@@ -546,10 +572,19 @@ def pick_best_match(
     if _block_exists_in_target(source_name, target_blocks):
         return MatchResult(source=source_name, target=source_name, reason="exists_in_target_1.16.5", confidence=1.0)
 
+    # Invisible technical block: if target version has no `light`, prefer removing it.
+    if _as_key(source_name) == "light":
+        if "minecraft:air" in target_blocks or "air" in target_blocks:
+            return MatchResult(source=source_name, target="minecraft:air", reason="light_removed", confidence=0.98)
+
     # Special handling for colorless/foliage-like blocks.
     manual_match = _manual_override_match(source_name, target_blocks)
     if manual_match:
         return MatchResult(source=source_name, target=manual_match, reason="manual_exact_mapping", confidence=0.97)
+
+    soft_match = _special_soft_match(source_name, target_blocks)
+    if soft_match:
+        return MatchResult(source=source_name, target=soft_match, reason="special_soft_mapping", confidence=0.93)
 
     # Special handling for colorless/foliage-like blocks.
     colorless_replacement = _get_colorless_replacement(source_name)
