@@ -5,6 +5,7 @@ from typing import Set, Optional
 
 from .block_gradients import find_best_block_match, get_block_category
 from .categories import categorize_block
+from .strict_rules import is_safe_replacement_strict, get_block_strict_category
 
 
 def _normalize_block_name(name: str) -> str:
@@ -43,6 +44,22 @@ def _pick_shape_safe_match(
         candidate_base = candidate.split("[", 1)[0]
         candidate_key = _as_key(candidate_base)
         candidate_traits = categorize_block(candidate_base)
+
+        # ULTRA STRICT SAFETY CHECKS
+        # 1. Leaves can ONLY become leaves!
+        source_strict_cat = get_block_strict_category(source_name)
+        target_strict_cat = get_block_strict_category(candidate_base)
+        
+        if source_strict_cat == "leaves" and target_strict_cat != "leaves":
+            continue  # FORBIDDEN: leaves -> non-leaves
+        
+        # 2. Water can ONLY become water!
+        if source_strict_cat == "water" and target_strict_cat != "water":
+            continue  # FORBIDDEN: water -> non-water
+        
+        # 3. Use strict safety rules
+        if not is_safe_replacement_strict(source_name, candidate_base):
+            continue
 
         # Hard safety: do not map non-liquid blocks to liquids and vice versa.
         if source_traits.block_type == "liquid" and candidate_traits.block_type != "liquid":

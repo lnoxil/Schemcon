@@ -16,6 +16,7 @@ from .gradient import (
     refresh_gradient_maps_for_local_versions,
     save_gradient_map,
 )
+from .typed_gradient_manager import get_typed_gradient_manager
 from .schem import export_fawe_compatible, load_schematic
 from .matcher import pick_best_match
 from .registry import (
@@ -241,24 +242,32 @@ class SchemconApp(ttk.Frame):
 
             input_palette = load_schematic(input_schem).palette
             palette_blocks = set(input_palette.keys())
-            palette_bases = {name.split("[", 1)[0] for name in palette_blocks}
 
-            gradient_map = self._build_or_load_gradient_map(
-                source_version,
-                target_version,
-                palette_bases if palette_bases else set(source_registry.keys()),
-                target_blocks,
-            )
-
+            # Use new TYPED gradient manager system
+            self._log(f"Построение типизированной градиент-карты: {source_version} -> {target_version}")
+            typed_manager = get_typed_gradient_manager()
+            typed_gradient_map = typed_manager.build_typed_gradient_map(source_version, target_version)
+            
+            # Create mapping
             mapping: dict[str, dict[str, str]] = {}
             for block in sorted(palette_blocks):
-                res = pick_best_match(block, target_blocks, gradient_map=gradient_map)
-                if res.target == "minecraft:air" and "[" in block:
-                    base = block.split("[", 1)[0]
-                    base_res = pick_best_match(base, target_blocks, gradient_map=gradient_map)
-                    if base_res.target != "minecraft:air":
-                        res = base_res
-                mapping[block] = {"target": res.target, "reason": res.reason}
+                base_block = block.split("[", 1)[0]
+                
+                # Check if block exists in target version - preserve exactly!
+                if base_block in target_blocks:
+                    mapping[block] = {"target": block, "reason": "exists_in_target"}
+                elif block in typed_gradient_map:
+                    # Use typed gradient map
+                    entry = typed_gradient_map[block]
+                    mapping[block] = {"target": entry.target, "reason": entry.reason}
+                else:
+                    # Fallback to basic matcher
+                    res = pick_best_match(block, target_blocks)
+                    if res.target == "minecraft:air" and "[" in block:
+                        base_res = pick_best_match(base_block, target_blocks)
+                        if base_res.target != "minecraft:air":
+                            res = base_res
+                    mapping[block] = {"target": res.target, "reason": res.reason}
 
             mapping_path.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
             self._log(f"Mapping сохранён: {mapping_path}")
@@ -385,6 +394,29 @@ class SchemconApp(ttk.Frame):
 
         return target
 
+    def _rebuild_gradient_maps(self) -> None:
+        """Force rebuild all gradient maps for current versions."""
+        try:
+            source_version = self.source_version_var.get().strip()
+            target_version = self.target_version_var.get().strip()
+            
+            if not source_version or not target_version:
+                raise ValueError("Укажите обе версии.")
+            
+            self._log(f"Перестройка градиент-карт: {source_version} -> {target_version}")
+            
+            # Use new typed gradient manager
+            manager = get_typed_gradient_manager()
+            gradient_map = manager.build_typed_gradient_map(
+                source_version, target_version, force_rebuild=True
+            )
+            
+            self._log(f"Градиент-карта обновлена: {len(gradient_map)} маппингов")
+            messagebox.showinfo("Успех", f"Градиент-карта обновлена:\n{len(gradient_map)} блоков")
+            
+        except Exception as e:
+            self._log(f"Ошибка: {e}")
+            messagebox.showerror("Ошибка", str(e))
 
     def _refresh_tree(self) -> None:
         query = self.filter_var.get().strip().lower()
