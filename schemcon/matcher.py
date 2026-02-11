@@ -74,6 +74,15 @@ EXACT_BLOCK_MAPPINGS = {
     "barrel": "minecraft:chest",
     "campfire": "minecraft:orange_stained_glass",
     "soul_campfire": "minecraft:light_blue_stained_glass",
+    "composter": "minecraft:oak_planks",
+    "piglin_head": "minecraft:player_head",
+    "piglin_wall_head": "minecraft:player_wall_head",
+    "zombie_head": "minecraft:player_head",
+    "zombie_wall_head": "minecraft:player_wall_head",
+    "creeper_head": "minecraft:player_head",
+    "creeper_wall_head": "minecraft:player_wall_head",
+    "dragon_head": "minecraft:player_head",
+    "dragon_wall_head": "minecraft:player_wall_head",
 }
 
 PREFER_FAMILIES = {"concrete", "wool"}
@@ -83,6 +92,29 @@ DISCOURAGED_PATTERN_TOKENS = {
     "chiseled",
     "shulker_box",
 }
+
+WOOD_FALLBACK_ORDER = [
+    "minecraft:oak_planks",
+    "minecraft:spruce_planks",
+    "minecraft:birch_planks",
+    "minecraft:oak_log",
+    "minecraft:spruce_log",
+    "minecraft:oak_wood",
+    "minecraft:bookshelf",
+    "minecraft:chest",
+]
+
+HEAD_FALLBACK_ORDER = [
+    "minecraft:player_head",
+    "minecraft:skeleton_skull",
+    "minecraft:skull",
+]
+
+HEAD_WALL_FALLBACK_ORDER = [
+    "minecraft:player_wall_head",
+    "minecraft:skeleton_wall_skull",
+    "minecraft:wall_skull",
+]
 
 COLOR_TOKEN_MAP = {
     "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
@@ -168,6 +200,8 @@ def _family_group(family: str) -> str:
         return "mineral"
     if family in {"mushroom"}:
         return "plant"
+    if family in {"head"}:
+        return "decor"
     return family
 
 
@@ -263,6 +297,25 @@ def _manual_override_match(source_name: str, target_blocks: Set[str]) -> Optiona
 
 def _special_soft_match(source_name: str, target_blocks: Set[str]) -> Optional[str]:
     src = _as_key(source_name)
+
+    if src in {"player_head", "head"}:
+        for cand in HEAD_FALLBACK_ORDER:
+            clean = _as_key(cand)
+            if cand in target_blocks or clean in target_blocks:
+                return cand
+
+    if src in {"player_wall_head", "wall_head"}:
+        for cand in HEAD_WALL_FALLBACK_ORDER:
+            clean = _as_key(cand)
+            if cand in target_blocks or clean in target_blocks:
+                return cand
+
+    if any(token in src for token in {"_wood", "_log", "_planks", "stem", "hyphae", "composter", "barrel"}):
+        for cand in WOOD_FALLBACK_ORDER:
+            clean = _as_key(cand)
+            if cand in target_blocks or clean in target_blocks:
+                return cand
+
     if src == "moss_carpet":
         for cand in ["minecraft:green_carpet", "minecraft:green_wool", "minecraft:mossy_cobblestone", "minecraft:grass"]:
             clean = _as_key(cand)
@@ -291,6 +344,29 @@ def _special_soft_match(source_name: str, target_blocks: Set[str]) -> Optional[s
 def _is_discouraged_pattern_block(block_name: str) -> bool:
     base = _as_key(block_name)
     return any(token in base for token in DISCOURAGED_PATTERN_TOKENS)
+
+
+def _is_wood_like_name(name: str) -> bool:
+    key = _as_key(name)
+    return any(token in key for token in {
+        "_log", "_wood", "_planks", "stem", "hyphae", "composter", "barrel", "stripped_", "bamboo_block", "bookshelf"
+    })
+
+
+def _is_stone_like_name(name: str) -> bool:
+    key = _as_key(name)
+    return any(token in key for token in {
+        "stone", "deepslate", "andesite", "diorite", "granite", "cobble", "blackstone", "tuff", "calcite", "brick"
+    })
+
+
+def _should_skip_patterned_candidate(source_name: str, candidate_name: str) -> bool:
+    src = _as_key(source_name)
+    cand = _as_key(candidate_name)
+    if not _is_discouraged_pattern_block(cand):
+        return False
+    # If source itself is patterned, allow patterned replacement as last option.
+    return not _is_discouraged_pattern_block(src)
 
 
 def _same_shape_candidates(source_name: str, target_blocks: Set[str]) -> list[str]:
@@ -359,6 +435,8 @@ def _pick_shape_safe_match(
         candidate_base = candidate.split("[", 1)[0]
         if _as_key(candidate_base) == "air":
             continue
+        if _should_skip_patterned_candidate(source_name, candidate_base):
+            continue
         candidate_traits = categorize_block(candidate_base)
 
         # ULTRA STRICT SAFETY CHECKS
@@ -387,6 +465,12 @@ def _pick_shape_safe_match(
             continue
 
         if not _special_plant_compatible(source_name, candidate_base):
+            continue
+
+        # Keep wood-like blocks in wood-like space for old-version fallback quality.
+        if _is_wood_like_name(source_name) and not _is_wood_like_name(candidate_base):
+            continue
+        if _is_stone_like_name(source_name) and _is_wood_like_name(candidate_base):
             continue
 
         # Do not replace full blocks with tiny decorative models.
@@ -505,6 +589,8 @@ def _pick_relaxed_safe_match(
         candidate_base = candidate.split("[", 1)[0]
         if _as_key(candidate_base) == "air":
             continue
+        if _should_skip_patterned_candidate(source_name, candidate_base):
+            continue
         candidate_traits = categorize_block(candidate_base)
 
         if not _strict_category_compatible(source_name, candidate_base):
@@ -523,6 +609,10 @@ def _pick_relaxed_safe_match(
         if not _family_compatible(source_traits.family, candidate_traits.family):
             continue
         if not _special_plant_compatible(source_name, candidate_base):
+            continue
+        if _is_wood_like_name(source_name) and not _is_wood_like_name(candidate_base):
+            continue
+        if _is_stone_like_name(source_name) and _is_wood_like_name(candidate_base):
             continue
         candidate_clean = _as_key(candidate_base)
         source_clean = _as_key(source_name)
@@ -687,6 +777,8 @@ def pick_best_match(
     src_color = _resolve_color(source_name, gradient_map)
     fallback_best: tuple[float, str] | None = None
     for cand in _same_shape_candidates(source_name, target_blocks):
+        if _should_skip_patterned_candidate(source_name, cand):
+            continue
         if not _strict_category_compatible(source_name, cand):
             continue
         if not is_safe_replacement_strict(source_name, cand):
@@ -711,7 +803,7 @@ def pick_best_match(
     # Absolute final fallback (still avoid air unless truly absent in target set)
     for cand in sorted(target_blocks):
         base = cand.split("[", 1)[0]
-        if _as_key(base) != "air":
+        if _as_key(base) != "air" and not _should_skip_patterned_candidate(source_name, base):
             return MatchResult(source=source_name, target=base, reason="last_resort_any_block", confidence=0.25)
 
     return MatchResult(source=source_name, target="minecraft:air", reason="no_match", confidence=0.0)

@@ -91,6 +91,10 @@ FAMILY_RULES = {
     "azalea": "azalea",
     "lichen": "lichen",
     "dripleaf": "plant",
+    "head": "head",
+    "skull": "head",
+    "composter": "planks",
+    "barrel": "planks",
 }
 
 BLOCK_CATEGORIES = {
@@ -164,6 +168,12 @@ BLOCK_CATEGORIES = {
     "decorated_pot": "pot_block",
     "banner": "banner",
     "wall_banner": "banner",
+    "player_head": "head",
+    "player_wall_head": "head",
+    "skeleton_skull": "head",
+    "skeleton_wall_skull": "head",
+    "skull": "head",
+    "wall_skull": "head",
     "command_block": "command_block",
     "chain_command_block": "command_block",
     "repeating_command_block": "command_block",
@@ -202,6 +212,7 @@ BLOCK_PROPERTIES = {
     },
     "banner": {
         "banner",
+        "head",
     },
     "liquid": {
         "liquid_water",
@@ -292,6 +303,7 @@ def _detect_block_type(category: str, family: str) -> str:
         "prismarine",
         "amethyst",
         "brick",
+        "head",
     }:
         return "solid"
 
