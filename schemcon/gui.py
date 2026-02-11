@@ -278,11 +278,8 @@ class SchemconApp(ttk.Frame):
         if not jar_path.exists():
             download_server_jar(version_json, jar_path)
 
-        if blocks_path.exists():
-            self._log(f"Реестр уже есть: {version_dir}")
-        else:
-            _paths, source = ensure_registry_reports(version, jar_path, version_dir, version_json=version_json)
-            self._log(f"Реестр {version} подготовлен (source={source})")
+        _paths, source = ensure_registry_reports(version, jar_path, version_dir, version_json=version_json)
+        self._log(f"Реестр {version} обновлён (source={source})")
 
         client_jar = version_dir / f"{version}.client.jar"
         if not client_jar.exists():
