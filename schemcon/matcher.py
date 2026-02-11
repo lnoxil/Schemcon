@@ -95,6 +95,7 @@ DISCOURAGED_PATTERN_TOKENS = {
 }
 
 DISCOURAGED_UTILITY_TOKENS = {
+    "barrier",
     "hopper",
     "brewing_stand",
     "cauldron",
