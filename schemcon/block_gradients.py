@@ -683,9 +683,29 @@ def find_best_block_match(source_block: str, target_blocks: Set[str]) -> Optiona
                 matching_blocks.append(target)
         
         if matching_blocks:
-            # Return the first matching block (could use color matching here)
-            # For now, simple approach: return first match
-            return matching_blocks[0]
+            # Choose nearest by gradient color instead of random/first set order.
+            source_gradient = get_block_gradient(source_block)
+            if source_gradient and source_gradient in COLOR_GRADIENTS:
+                source_rgbs = [hex_to_rgb(c) for c in COLOR_GRADIENTS[source_gradient]]
+
+                def block_score(block: str) -> float:
+                    target_gradient = get_block_gradient(block)
+                    if not target_gradient or target_gradient not in COLOR_GRADIENTS:
+                        return float("inf")
+                    target_rgbs = [hex_to_rgb(c) for c in COLOR_GRADIENTS[target_gradient]]
+                    total_distance = 0.0
+                    count = 0
+                    for src_rgb in source_rgbs:
+                        for tgt_rgb in target_rgbs:
+                            total_distance += color_distance(src_rgb, tgt_rgb)
+                            count += 1
+                    return total_distance / count if count else float("inf")
+
+                matching_blocks.sort(key=lambda b: (block_score(b), b))
+                return matching_blocks[0]
+
+            # deterministic fallback
+            return sorted(matching_blocks)[0]
     
     # Last resort: try color-based matching across all targets
     return find_closest_block_by_color(source_block, target_blocks)

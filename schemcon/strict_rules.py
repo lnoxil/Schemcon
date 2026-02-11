@@ -141,23 +141,23 @@ def get_block_strict_category(block_name: str) -> str:
             return "liquid"
         elif "leaves" in block_clean:
             return "leaves"
-        elif block_clean.endswith("_banner"):
-            return "banner"
         elif block_clean.endswith("_wall_banner"):
             return "wall_banner"
+        elif block_clean.endswith("_banner"):
+            return "banner"
     
     # Pattern matching
     if "leaves" in block_clean:
         return "leaves"
-    elif block_clean in ["water", "lava", "bubble_column", "kelp", "seagrass"]:
+    elif block_clean in ["water", "flowing_water", "bubble_column", "kelp", "kelp_plant", "seagrass", "tall_seagrass"]:
         return "water"
-    elif block_clean.endswith("_banner"):
-        return "banner"
     elif block_clean.endswith("_wall_banner"):
         return "wall_banner"
-    elif block_clean.endswith("_sapling") or block_clean == "mangrove_propagule":
+    elif block_clean.endswith("_banner"):
+        return "banner"
+    elif block_clean.endswith("_sapling") or block_clean in {"mangrove_propagule", "azalea", "flowering_azalea"}:
         return "sapling"
-    elif any(x in block_clean for x in ["grass", "fern", "dead_bush"]):
+    elif any(x in block_clean for x in ["grass", "fern", "dead_bush", "dripleaf", "lichen", "vine"]):
         return "short_grass"
     elif any(x in block_clean for x in ["dandelion", "poppy", "orchid", "allium", "bluet", "daisy", "cornflower", "lily"]):
         return "flower"

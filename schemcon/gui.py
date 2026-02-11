@@ -5,19 +5,19 @@ import pathlib
 import re
 import shutil
 import zipfile
+from typing import Any
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .categories import categorize_block
 from .convert import convert_schematic
 from .gradient import (
     build_gradient_map,
+    list_local_versions,
     load_gradient_map,
     refresh_gradient_maps_for_local_versions,
     save_gradient_map,
 )
-from .typed_gradient_manager import get_typed_gradient_manager
-from .schem import export_fawe_compatible, load_schematic
 from .matcher import pick_best_match
 from .registry import (
     download_client_jar,
@@ -28,25 +28,36 @@ from .registry import (
     load_registry,
     resolve_version_info,
 )
+from .schem import export_fawe_compatible, load_schematic
 
 
 class SchemconApp(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master)
         self.pack(fill=tk.BOTH, expand=True)
+
         self._mapping_rows: list[dict[str, str]] = []
-        self._texture_index: dict[str, set[str]] = {}
-        self._photo_refs: dict[str, tk.PhotoImage] = {}
         self._version_root = pathlib.Path("data/versions")
         self._current_source_version = ""
         self._current_target_version = ""
+        self._current_target_blocks: set[str] = set()
+        self._pending_mapping: dict[str, dict[str, str]] = {}
+        self._pending_output_schem = ""
+        self._pending_input_schem = ""
+        self._current_gradient_map: dict[str, tuple[int, int, int]] = {}
+
+        self._jar_member_index: dict[str, set[str]] = {}
+        self._photo_refs: dict[str, tk.PhotoImage] = {}
+        self._block_icon_cache: dict[str, tk.PhotoImage] = {}
+        self._pair_icon_cache: dict[str, tk.PhotoImage] = {}
+        self._group_children: dict[str, list[dict[str, str]]] = {}
+
         self._build_style()
         self._build_layout()
+        self._refresh_version_choices()
         self._preload_local_gradient_maps()
 
-
     def _preload_local_gradient_maps(self) -> None:
-        """Autonomous local gradient synchronization at GUI startup."""
         try:
             stats = refresh_gradient_maps_for_local_versions(
                 self._version_root,
@@ -73,99 +84,143 @@ class SchemconApp(ttk.Frame):
         header = ttk.Label(self, text="Schemcon — авто-конвертация схем", style="Header.TLabel")
         header.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 8))
 
-        form = ttk.LabelFrame(self, text="Параметры")
-        form.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
+        versions_panel = ttk.LabelFrame(self, text="Панель версий")
+        versions_panel.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
+        versions_panel.columnconfigure(1, weight=1)
+
+        ttk.Label(versions_panel, text="Из версии").grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        self.source_version_var = tk.StringVar(value="1.21")
+        self.source_combo = ttk.Combobox(versions_panel, textvariable=self.source_version_var, state="readonly", width=18)
+        self.source_combo.grid(row=0, column=1, sticky="w", padx=8, pady=6)
+
+        ttk.Label(versions_panel, text="В версию").grid(row=1, column=0, sticky="w", padx=8, pady=6)
+        self.target_version_var = tk.StringVar(value="1.16.5")
+        self.target_combo = ttk.Combobox(versions_panel, textvariable=self.target_version_var, state="readonly", width=18)
+        self.target_combo.grid(row=1, column=1, sticky="w", padx=8, pady=6)
+
+        ttk.Button(versions_panel, text="Обновить список версий", command=self._refresh_version_choices).grid(
+            row=0, column=2, padx=8, pady=6
+        )
+        ttk.Button(versions_panel, text="Загрузить выбранные версии (+client.jar)", command=self._download_selected_versions).grid(
+            row=1, column=2, padx=8, pady=6
+        )
+
+        form = ttk.LabelFrame(self, text="Параметры конвертации")
+        form.grid(row=2, column=0, sticky="ew", padx=12, pady=6)
         form.columnconfigure(1, weight=1)
 
-        ttk.Label(form, text="Из версии").grid(row=0, column=0, sticky="w", padx=8, pady=6)
-        self.source_version_var = tk.StringVar(value="1.21")
-        ttk.Entry(form, textvariable=self.source_version_var, width=16).grid(row=0, column=1, sticky="w", padx=8, pady=6)
-
-        ttk.Label(form, text="В версию").grid(row=1, column=0, sticky="w", padx=8, pady=6)
-        self.target_version_var = tk.StringVar(value="1.16.5")
-        ttk.Entry(form, textvariable=self.target_version_var, width=16).grid(row=1, column=1, sticky="w", padx=8, pady=6)
-
-        ttk.Label(form, text="Входной .schem").grid(row=2, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(form, text="Входной .schem").grid(row=0, column=0, sticky="w", padx=8, pady=6)
         self.input_schem_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.input_schem_var).grid(row=2, column=1, sticky="ew", padx=8, pady=6)
-        ttk.Button(form, text="Выбрать", command=self._pick_input).grid(row=2, column=2, padx=8, pady=6)
+        ttk.Entry(form, textvariable=self.input_schem_var).grid(row=0, column=1, sticky="ew", padx=8, pady=6)
+        ttk.Button(form, text="Выбрать", command=self._pick_input).grid(row=0, column=2, padx=8, pady=6)
 
-        ttk.Label(form, text="Выходной .schem").grid(row=3, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(form, text="Выходной .schem").grid(row=1, column=0, sticky="w", padx=8, pady=6)
         self.output_schem_var = tk.StringVar(value="converted_output.schem")
-        ttk.Entry(form, textvariable=self.output_schem_var).grid(row=3, column=1, sticky="ew", padx=8, pady=6)
-        ttk.Button(form, text="Выбрать", command=self._pick_output).grid(row=3, column=2, padx=8, pady=6)
+        ttk.Entry(form, textvariable=self.output_schem_var).grid(row=1, column=1, sticky="ew", padx=8, pady=6)
+        ttk.Button(form, text="Выбрать", command=self._pick_output).grid(row=1, column=2, padx=8, pady=6)
 
-
-        ttk.Label(form, text="FAWE папка schematics (необязательно)").grid(row=4, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(form, text="FAWE папка schematics (необязательно)").grid(row=2, column=0, sticky="w", padx=8, pady=6)
         self.fawe_dir_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.fawe_dir_var).grid(row=4, column=1, sticky="ew", padx=8, pady=6)
-        ttk.Button(form, text="Выбрать", command=self._pick_fawe_dir).grid(row=4, column=2, padx=8, pady=6)
+        ttk.Entry(form, textvariable=self.fawe_dir_var).grid(row=2, column=1, sticky="ew", padx=8, pady=6)
+        ttk.Button(form, text="Выбрать", command=self._pick_fawe_dir).grid(row=2, column=2, padx=8, pady=6)
 
-        ttk.Label(form, text="Имя файла в FAWE").grid(row=5, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(form, text="Имя файла в FAWE").grid(row=3, column=0, sticky="w", padx=8, pady=6)
         self.fawe_name_var = tk.StringVar(value="converted")
-        ttk.Entry(form, textvariable=self.fawe_name_var).grid(row=5, column=1, sticky="ew", padx=8, pady=6)
+        ttk.Entry(form, textvariable=self.fawe_name_var).grid(row=3, column=1, sticky="ew", padx=8, pady=6)
 
         ttk.Button(
             form,
-            text="Авто: скачать реестры → построить mapping → конвертировать",
+            text="1) Построить mapping (только реальные замены)",
             style="Primary.TButton",
             command=self._run_auto,
-        ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 8))
+        ).grid(row=4, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 6))
 
-        preview = ttk.LabelFrame(self, text="Лог mapping (фактически использованные блоки из схемы)")
-        preview.grid(row=2, column=0, sticky="nsew", padx=12, pady=6)
+        ttk.Button(
+            form,
+            text="2) Подтвердить mapping и конвертировать",
+            style="Primary.TButton",
+            command=self._apply_mapping,
+        ).grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+
+        preview = ttk.LabelFrame(self, text="Лог mapping (группы блоков, сворачиваемые)")
+        preview.grid(row=3, column=0, sticky="nsew", padx=12, pady=6)
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(1, weight=1)
 
+        top_controls = ttk.Frame(preview)
+        top_controls.grid(row=0, column=0, sticky="ew", padx=8, pady=6)
+        top_controls.columnconfigure(0, weight=1)
+
         self.filter_var = tk.StringVar()
-        filter_entry = ttk.Entry(preview, textvariable=self.filter_var)
-        filter_entry.grid(row=0, column=0, sticky="ew", padx=8, pady=6)
+        filter_entry = ttk.Entry(top_controls, textvariable=self.filter_var)
+        filter_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         filter_entry.bind("<KeyRelease>", lambda _e: self._refresh_tree())
 
+        ttk.Button(top_controls, text="Изменить цель (выбранный блок)", command=self._edit_selected_mapping).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(top_controls, text="Изменить цель для группы", command=self._edit_selected_group_mapping).grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(top_controls, text="Экспорт лога цветов", command=self._export_color_log).grid(row=0, column=3)
+
         cols = ("source", "target", "reason", "src_props", "dst_props")
-        self.tree = ttk.Treeview(preview, columns=cols, show="headings", height=12)
-        self.tree.heading("source", text="Исходный")
-        self.tree.heading("target", text="Замена")
+        self.tree = ttk.Treeview(preview, columns=cols, show="tree headings", height=16)
+        self.tree.heading("#0", text="Текстуры src|dst")
+        self.tree.column("#0", width=130, anchor="center")
+
+        self.tree.heading("source", text="Исходный тег")
+        self.tree.heading("target", text="Тег замены")
         self.tree.heading("reason", text="Причина")
         self.tree.heading("src_props", text="Свойства исходного")
         self.tree.heading("dst_props", text="Свойства замены")
-        self.tree.column("source", width=220)
-        self.tree.column("target", width=220)
-        self.tree.column("reason", width=90, anchor="center")
-        self.tree.column("src_props", width=230)
-        self.tree.column("dst_props", width=230)
+        self.tree.column("source", width=320)
+        self.tree.column("target", width=320)
+        self.tree.column("reason", width=150, anchor="center")
+        self.tree.column("src_props", width=240)
+        self.tree.column("dst_props", width=240)
+
         self.tree.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=8)
-        self.tree.bind("<<TreeviewSelect>>", self._on_select)
+        self.tree.tag_configure("changed", background="#fff5cc")
+        self.tree.tag_configure("group", background="#dde9f7")
 
         ybar = ttk.Scrollbar(preview, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=ybar.set)
         ybar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=8)
 
-        texture = ttk.Frame(preview)
-        texture.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 8))
-        self.source_canvas = tk.Canvas(texture, width=24, height=24, highlightthickness=1)
-        self.source_canvas.grid(row=0, column=0, padx=(0, 6))
-        self.source_image = ttk.Label(texture)
-        self.source_image.grid(row=0, column=1, padx=(0, 6))
-        self.source_txt = ttk.Label(texture, text="Исходный")
-        self.source_txt.grid(row=0, column=2, sticky="w", padx=(0, 16))
-
-        self.target_canvas = tk.Canvas(texture, width=24, height=24, highlightthickness=1)
-        self.target_canvas.grid(row=0, column=3, padx=(0, 6))
-        self.target_image = ttk.Label(texture)
-        self.target_image.grid(row=0, column=4, padx=(0, 6))
-        self.target_txt = ttk.Label(texture, text="Замена")
-        self.target_txt.grid(row=0, column=5, sticky="w")
-
         log_frame = ttk.LabelFrame(self, text="Системный лог")
-        log_frame.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        log_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=(0, 12))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         self.log = tk.Text(log_frame, height=8, wrap="word", state="disabled")
         self.log.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
-        self.rowconfigure(2, weight=1)
         self.rowconfigure(3, weight=1)
+        self.rowconfigure(4, weight=1)
+
+    def _refresh_version_choices(self) -> None:
+        local = list_local_versions(self._version_root)
+        common = ["1.21", "1.20.6", "1.20.4", "1.19.4", "1.18.2", "1.17.1", "1.16.5"]
+        values = sorted(set(common + local), key=lambda v: tuple(int(p) if p.isdigit() else p for p in v.split('.')), reverse=True)
+        self.source_combo["values"] = values
+        self.target_combo["values"] = values
+        if self.source_version_var.get() not in values and values:
+            self.source_version_var.set(values[0])
+        if self.target_version_var.get() not in values:
+            self.target_version_var.set("1.16.5" if "1.16.5" in values else (values[-1] if values else ""))
+        self._log(f"Доступные версии: {', '.join(values[:12])}{' ...' if len(values) > 12 else ''}")
+
+    def _download_selected_versions(self) -> None:
+        try:
+            source_version = self.source_version_var.get().strip()
+            target_version = self.target_version_var.get().strip()
+            if not source_version or not target_version:
+                raise ValueError("Выберите обе версии в выпадающем списке.")
+
+            manifest = fetch_version_manifest()
+            self._prepare_version_registry(source_version, manifest, self._version_root)
+            self._prepare_version_registry(target_version, manifest, self._version_root)
+            self._refresh_version_choices()
+            messagebox.showinfo("Готово", f"Версии подготовлены:\n{source_version}\n{target_version}")
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Ошибка загрузки версий: {exc}")
+            messagebox.showerror("Ошибка", str(exc))
 
     def _pick_input(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("Schematic", "*.schem")])
@@ -191,10 +246,35 @@ class SchemconApp(ttk.Frame):
         self.log.configure(state="disabled")
         self.log.see(tk.END)
 
+    def _normalize_block(self, block_name: str) -> str:
+        base = block_name.split("[", 1)[0]
+        return base if ":" in base else f"minecraft:{base}"
+
+    def _color_from_gradient_map(self, block_name: str) -> tuple[int, int, int] | None:
+        base = self._normalize_block(block_name)
+        bare = base.replace("minecraft:", "")
+        candidates = [block_name, base, bare, f"minecraft:{bare}"]
+        for key in candidates:
+            value = self._current_gradient_map.get(key)
+            if value:
+                return value
+        return None
+
+    def _block_color(self, block_name: str) -> tuple[int, int, int]:
+        sampled = self._color_from_gradient_map(block_name)
+        if sampled:
+            return sampled
+        tr = categorize_block(block_name)
+        return tr.color or (120, 120, 120)
+
     def _props(self, block_name: str) -> str:
         tr = categorize_block(block_name)
-        color = tr.color or (120, 120, 120)
+        color = self._block_color(block_name)
         return f"shape={tr.shape}, family={tr.family}, color={color}"
+
+    def _group_key_for_block(self, block_name: str) -> str:
+        tr = categorize_block(block_name)
+        return f"{tr.category}/{tr.shape}"
 
     def _run_auto(self) -> None:
         try:
@@ -202,10 +282,8 @@ class SchemconApp(ttk.Frame):
             target_version = self.target_version_var.get().strip()
             input_schem = self.input_schem_var.get().strip()
             output_schem = self.output_schem_var.get().strip()
-            fawe_dir = self.fawe_dir_var.get().strip()
-            fawe_name = self.fawe_name_var.get().strip()
             if not source_version or not target_version:
-                raise ValueError("Укажите обе версии.")
+                raise ValueError("Выберите обе версии.")
             if not input_schem or not pathlib.Path(input_schem).exists():
                 raise FileNotFoundError("Укажите существующий входной .schem файл.")
             if not output_schem:
@@ -213,6 +291,8 @@ class SchemconApp(ttk.Frame):
 
             self._current_source_version = source_version
             self._current_target_version = target_version
+            self._pending_output_schem = output_schem
+            self._pending_input_schem = input_schem
 
             self._log(f"Старт: {source_version} -> {target_version}")
             version_root = self._version_root
@@ -224,8 +304,6 @@ class SchemconApp(ttk.Frame):
             self._prepare_version_registry(source_version, manifest, version_root)
             self._prepare_version_registry(target_version, manifest, version_root)
 
-            # Keep gradient maps synchronized for all locally available versions.
-            # This makes downgrade rules update automatically when a new version is added.
             gradient_stats = refresh_gradient_maps_for_local_versions(
                 version_root,
                 pathlib.Path("data/gradients"),
@@ -238,42 +316,80 @@ class SchemconApp(ttk.Frame):
 
             source_registry = load_registry(version_root / source_version)
             target_registry = load_registry(version_root / target_version)
+            source_blocks = set(source_registry.keys())
             target_blocks = set(target_registry.keys())
+            self._current_target_blocks = target_blocks
+
+            self._current_gradient_map = self._build_or_load_gradient_map(
+                source_version, target_version, source_blocks, target_blocks
+            )
+            self._log(f"3D-градиент цветов загружен: {len(self._current_gradient_map)} блоков")
 
             input_palette = load_schematic(input_schem).palette
             palette_blocks = set(input_palette.keys())
 
-            # Use new TYPED gradient manager system
-            self._log(f"Построение типизированной градиент-карты: {source_version} -> {target_version}")
-            typed_manager = get_typed_gradient_manager()
-            typed_gradient_map = typed_manager.build_typed_gradient_map(source_version, target_version)
-            
-            # Create mapping
             mapping: dict[str, dict[str, str]] = {}
             for block in sorted(palette_blocks):
-                base_block = block.split("[", 1)[0]
-                
-                # Check if block exists in target version - preserve exactly!
-                if base_block in target_blocks:
+                base_block = self._normalize_block(block)
+                base_bare = base_block.replace("minecraft:", "")
+                if base_block in target_blocks or base_bare in target_blocks:
                     mapping[block] = {"target": block, "reason": "exists_in_target"}
-                elif block in typed_gradient_map:
-                    # Use typed gradient map
-                    entry = typed_gradient_map[block]
-                    mapping[block] = {"target": entry.target, "reason": entry.reason}
-                else:
-                    # Fallback to basic matcher
-                    res = pick_best_match(block, target_blocks)
-                    if res.target == "minecraft:air" and "[" in block:
-                        base_res = pick_best_match(base_block, target_blocks)
-                        if base_res.target != "minecraft:air":
-                            res = base_res
-                    mapping[block] = {"target": res.target, "reason": res.reason}
+                    continue
+
+                res = pick_best_match(block, target_blocks, gradient_map=self._current_gradient_map)
+                if res.target == "minecraft:air" and "[" in block:
+                    base_res = pick_best_match(base_block, target_blocks, gradient_map=self._current_gradient_map)
+                    if base_res.target != "minecraft:air":
+                        res = base_res
+                mapping[block] = {"target": res.target, "reason": res.reason}
 
             mapping_path.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
+            self._pending_mapping = mapping
             self._log(f"Mapping сохранён: {mapping_path}")
 
-            flat_mapping = {k: v["target"] for k, v in mapping.items()}
-            report = convert_schematic(input_schem, output_schem, flat_mapping, allowed_targets=target_blocks)
+            # Keep ONLY real replacements (source != target by base id)
+            self._mapping_rows = []
+            self._pair_icon_cache.clear()
+            for src, meta in sorted(mapping.items()):
+                tgt = meta.get("target", "minecraft:air")
+                changed = self._normalize_block(src) != self._normalize_block(tgt)
+                if not changed:
+                    continue
+                self._mapping_rows.append(
+                    {
+                        "source": src,
+                        "target": tgt,
+                        "reason": meta.get("reason", "mapped"),
+                        "src_props": self._props(src),
+                        "dst_props": self._props(tgt),
+                        "src_color": str(self._block_color(src)),
+                        "dst_color": str(self._block_color(tgt)),
+                        "changed": "1",
+                        "group": self._group_key_for_block(src),
+                    }
+                )
+            self._refresh_tree()
+            self._log(f"Реальных замен: {len(self._mapping_rows)}")
+            messagebox.showinfo("Mapping готов", "Показаны только реальные замены, сгруппированные по типам.")
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Ошибка: {exc}")
+            messagebox.showerror("Ошибка", str(exc))
+
+    def _apply_mapping(self) -> None:
+        try:
+            if not self._pending_mapping:
+                raise ValueError("Сначала постройте mapping (кнопка 1).")
+            output_schem = self.output_schem_var.get().strip() or self._pending_output_schem
+            input_schem = self.input_schem_var.get().strip() or self._pending_input_schem
+            fawe_dir = self.fawe_dir_var.get().strip()
+            fawe_name = self.fawe_name_var.get().strip()
+            if not input_schem:
+                raise ValueError("Не найден входной .schem путь.")
+            if not output_schem:
+                raise ValueError("Не указан выходной .schem путь.")
+
+            flat_mapping = {k: v.get("target", "minecraft:air") for k, v in self._pending_mapping.items()}
+            report = convert_schematic(input_schem, output_schem, flat_mapping, allowed_targets=self._current_target_blocks)
             report_path = pathlib.Path(output_schem).with_suffix(".report.json")
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
             self._log(f"Схема конвертирована: {output_schem}")
@@ -285,34 +401,150 @@ class SchemconApp(ttk.Frame):
                 self._log(f"FAWE файл: {fawe_path}")
                 self._log(f"Команда в игре: //schem load {cmd_name}")
 
-            palette_mapping = report.get("palette_mapping", [])
-            self._mapping_rows = []
-            for row in palette_mapping:
-                src = row["source"]
-                tgt = row["target"]
-                base_src = src.split("[", 1)[0]
-                reason = mapping.get(src, {}).get("reason") if isinstance(mapping.get(src), dict) else None
-                if reason is None:
-                    reason = mapping.get(base_src, {}).get("reason") if isinstance(mapping.get(base_src), dict) else "used"
-                self._mapping_rows.append(
-                    {
-                        "source": src,
-                        "target": tgt,
-                        "reason": reason,
-                        "src_props": self._props(src),
-                        "dst_props": self._props(tgt),
-                    }
-                )
-            self._refresh_tree()
             messagebox.showinfo("Готово", "Конвертация успешно завершена.")
         except Exception as exc:  # noqa: BLE001
             self._log(f"Ошибка: {exc}")
             messagebox.showerror("Ошибка", str(exc))
 
+    def _edit_selected_mapping(self) -> None:
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Нет выбора", "Выберите строку mapping для редактирования.")
+            return
+        item = selected[0]
+        parent = self.tree.parent(item)
+        if parent == "":
+            messagebox.showwarning("Выбрана группа", "Для группы используйте кнопку 'Изменить цель для группы'.")
+            return
+
+        values = self.tree.item(item, "values")
+        if not values:
+            return
+        source_block, current_target = values[0], values[1]
+
+        new_target = simpledialog.askstring(
+            "Изменение замены",
+            "Введите целевой блок (например minecraft:red_wool):",
+            initialvalue=current_target,
+            parent=self,
+        )
+        if new_target is None:
+            return
+
+        new_target = new_target.strip()
+        if not new_target:
+            return
+        if ":" not in new_target:
+            new_target = f"minecraft:{new_target}"
+
+        base_target = self._normalize_block(new_target)
+        base_target_bare = base_target.replace("minecraft:", "")
+        if base_target not in self._current_target_blocks and base_target_bare not in self._current_target_blocks:
+            messagebox.showerror("Некорректная цель", f"Блок отсутствует в target версии: {base_target}")
+            return
+
+        if source_block not in self._pending_mapping:
+            self._pending_mapping[source_block] = {}
+        self._pending_mapping[source_block]["target"] = new_target
+        self._pending_mapping[source_block]["reason"] = "manual_override"
+
+        for row in self._mapping_rows:
+            if row["source"] != source_block:
+                continue
+            row["target"] = new_target
+            row["reason"] = "manual_override"
+            row["dst_props"] = self._props(new_target)
+            row["dst_color"] = str(self._block_color(new_target))
+            break
+
+        self._refresh_tree()
+        self._log(f"Manual override: {source_block} -> {new_target}")
+
+    def _edit_selected_group_mapping(self) -> None:
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Нет выбора", "Выберите группу в mapping дереве.")
+            return
+
+        group_item = selected[0]
+        if self.tree.parent(group_item) != "":
+            group_item = self.tree.parent(group_item)
+
+        group_name = self.tree.item(group_item, "text")
+        rows = self._group_children.get(group_item, [])
+        if not rows:
+            messagebox.showwarning("Пустая группа", "В выбранной группе нет блоков для редактирования.")
+            return
+
+        new_target = simpledialog.askstring(
+            "Изменение группы",
+            f"Введите целевой блок для всей группы '{group_name}':",
+            initialvalue=rows[0]["target"],
+            parent=self,
+        )
+        if new_target is None:
+            return
+        new_target = new_target.strip()
+        if not new_target:
+            return
+        if ":" not in new_target:
+            new_target = f"minecraft:{new_target}"
+
+        base_target = self._normalize_block(new_target)
+        base_target_bare = base_target.replace("minecraft:", "")
+        if base_target not in self._current_target_blocks and base_target_bare not in self._current_target_blocks:
+            messagebox.showerror("Некорректная цель", f"Блок отсутствует в target версии: {base_target}")
+            return
+
+        changed_count = 0
+        for row in rows:
+            src = row["source"]
+            if src not in self._pending_mapping:
+                self._pending_mapping[src] = {}
+            self._pending_mapping[src]["target"] = new_target
+            self._pending_mapping[src]["reason"] = "manual_group_override"
+
+            row["target"] = new_target
+            row["reason"] = "manual_group_override"
+            row["dst_props"] = self._props(new_target)
+            row["dst_color"] = str(self._block_color(new_target))
+            changed_count += 1
+
+        self._refresh_tree()
+        self._log(f"Group override ({group_name}): {changed_count} блоков -> {new_target}")
+
+    def _export_color_log(self) -> None:
+        if not self._mapping_rows:
+            messagebox.showwarning("Пусто", "Сначала постройте mapping.")
+            return
+
+        lines = ["source_block\tsource_color\ttarget_block\ttarget_color\treason\tgroup"]
+        for row in self._mapping_rows:
+            lines.append(
+                "\t".join(
+                    [
+                        row["source"],
+                        row.get("src_color", ""),
+                        row["target"],
+                        row.get("dst_color", ""),
+                        row["reason"],
+                        row.get("group", ""),
+                    ]
+                )
+            )
+        payload = "\n".join(lines)
+
+        out_path = pathlib.Path(self.output_schem_var.get().strip() or "mapping").with_suffix(".color-log.tsv")
+        out_path.write_text(payload, encoding="utf-8")
+
+        self.clipboard_clear()
+        self.clipboard_append(payload)
+        self._log(f"Лог цветов сохранён: {out_path} (и скопирован в буфер)")
+        messagebox.showinfo("Готово", f"Лог цветов сохранён:\n{out_path}\n\nТакже скопирован в буфер обмена.")
+
     def _prepare_version_registry(self, version: str, manifest: dict, version_root: pathlib.Path) -> None:
         version_dir = version_root / version
         version_dir.mkdir(parents=True, exist_ok=True)
-        blocks_path = version_dir / "blocks.json"
 
         info = resolve_version_info(version, manifest)
         version_json = fetch_version_json(info)
@@ -348,12 +580,12 @@ class SchemconApp(ttk.Frame):
         source_client = self._version_root / source_version / f"{source_version}.client.jar"
         target_client = self._version_root / target_version / f"{target_version}.client.jar"
 
-        if source_client.exists() and len(source_grad) < max(32, len(source_blocks) // 4):
+        if source_client.exists() and len(source_grad) < max(32, len(source_blocks) // 3):
             source_grad = build_gradient_map(source_client, source_blocks)
             save_gradient_map(source_file, source_grad)
             self._log(f"Карта градиента source обновлена: {len(source_grad)} текстур")
 
-        if target_client.exists() and len(target_grad) < max(32, len(target_blocks) // 4):
+        if target_client.exists() and len(target_grad) < max(32, len(target_blocks) // 3):
             target_grad = build_gradient_map(target_client, target_blocks)
             save_gradient_map(target_file, target_grad)
             self._log(f"Карта градиента target обновлена: {len(target_grad)} текстур")
@@ -379,7 +611,6 @@ class SchemconApp(ttk.Frame):
         target = target_dir / f"{name}.schem"
         shutil.copy2(out_path, target)
 
-        # Also produce v3 variant for servers preferring Sponge v3 loaders.
         v3_source = out_path.with_name(f"{out_path.stem}.v3.schem")
         shutil.copy2(out_path, v3_source)
         export_fawe_compatible(str(v3_source), sponge_version=3)
@@ -394,138 +625,259 @@ class SchemconApp(ttk.Frame):
 
         return target
 
-    def _rebuild_gradient_maps(self) -> None:
-        """Force rebuild all gradient maps for current versions."""
+    def _get_jar_members(self, version: str) -> set[str]:
+        cached = self._jar_member_index.get(version)
+        if cached is not None:
+            return cached
+
+        client_jar = self._version_root / version / f"{version}.client.jar"
+        if not client_jar.exists():
+            self._jar_member_index[version] = set()
+            return set()
+
         try:
-            source_version = self.source_version_var.get().strip()
-            target_version = self.target_version_var.get().strip()
-            
-            if not source_version or not target_version:
-                raise ValueError("Укажите обе версии.")
-            
-            self._log(f"Перестройка градиент-карт: {source_version} -> {target_version}")
-            
-            # Use new typed gradient manager
-            manager = get_typed_gradient_manager()
-            gradient_map = manager.build_typed_gradient_map(
-                source_version, target_version, force_rebuild=True
-            )
-            
-            self._log(f"Градиент-карта обновлена: {len(gradient_map)} маппингов")
-            messagebox.showinfo("Успех", f"Градиент-карта обновлена:\n{len(gradient_map)} блоков")
-            
-        except Exception as e:
-            self._log(f"Ошибка: {e}")
-            messagebox.showerror("Ошибка", str(e))
+            with zipfile.ZipFile(client_jar) as jar:
+                members = set(jar.namelist())
+            self._jar_member_index[version] = members
+            return members
+        except Exception:
+            self._jar_member_index[version] = set()
+            return set()
+
+    def _load_json_from_client_jar(self, version: str, member: str) -> dict[str, Any] | None:
+        client_jar = self._version_root / version / f"{version}.client.jar"
+        if not client_jar.exists():
+            return None
+        try:
+            with zipfile.ZipFile(client_jar) as jar:
+                return json.loads(jar.read(member).decode("utf-8"))
+        except Exception:
+            return None
+
+    def _collect_model_textures(self, version: str, model_name: str, merged: dict[str, str], visited: set[str]) -> dict[str, str]:
+        model_clean = model_name.replace("minecraft:", "")
+        if not model_clean.startswith("block/"):
+            model_clean = f"block/{model_clean}"
+        if model_clean in visited:
+            return merged
+        visited.add(model_clean)
+
+        model_file = f"assets/minecraft/models/{model_clean}.json"
+        payload = self._load_json_from_client_jar(version, model_file)
+        if not payload:
+            return merged
+
+        parent = payload.get("parent")
+        if isinstance(parent, str) and parent:
+            merged = self._collect_model_textures(version, parent, merged, visited)
+
+        textures = payload.get("textures")
+        if isinstance(textures, dict):
+            for k, v in textures.items():
+                if isinstance(v, str):
+                    merged[k] = v
+
+        return merged
+
+    def _resolve_model_texture_member(self, version: str, model_name: str, visited: set[str]) -> str | None:
+        members = self._get_jar_members(version)
+        merged = self._collect_model_textures(version, model_name, {}, visited)
+        if not merged:
+            return None
+
+        preferred = ["all", "side", "front", "top", "end", "particle", "north", "south", "east", "west", "bottom"]
+
+        def resolve_ref(value: str) -> str | None:
+            current = value
+            guard = 0
+            while current.startswith("#") and guard < 12:
+                guard += 1
+                current = merged.get(current[1:], "")
+                if not current:
+                    return None
+            return current or None
+
+        for key in preferred + list(merged.keys()):
+            value = merged.get(key)
+            if not isinstance(value, str):
+                continue
+            resolved = resolve_ref(value)
+            if not resolved:
+                continue
+            resolved = resolved.replace("minecraft:", "")
+            if not resolved.startswith("block/"):
+                resolved = f"block/{resolved}"
+            tex_member = f"assets/minecraft/textures/{resolved}.png"
+            if tex_member in members:
+                return tex_member
+        return None
+
+    def _find_texture_member(self, version: str, block_name: str) -> str | None:
+        members = self._get_jar_members(version)
+        if not members:
+            return None
+
+        base = self._normalize_block(block_name).replace("minecraft:", "")
+
+        candidates = [base, f"{base}_side", f"{base}_front", f"{base}_top", f"{base}_end"]
+        for candidate in candidates:
+            member = f"assets/minecraft/textures/block/{candidate}.png"
+            if member in members:
+                return member
+
+        blockstate_member = f"assets/minecraft/blockstates/{base}.json"
+        blockstate = self._load_json_from_client_jar(version, blockstate_member)
+        if blockstate:
+            variants = blockstate.get("variants")
+            if isinstance(variants, dict) and variants:
+                for variant in variants.values():
+                    if isinstance(variant, list):
+                        items = variant
+                    else:
+                        items = [variant]
+                    for item in items:
+                        if isinstance(item, dict) and isinstance(item.get("model"), str):
+                            tex = self._resolve_model_texture_member(version, item["model"], set())
+                            if tex:
+                                return tex
+
+            multipart = blockstate.get("multipart")
+            if isinstance(multipart, list):
+                for part in multipart:
+                    if not isinstance(part, dict):
+                        continue
+                    apply = part.get("apply")
+                    applies = apply if isinstance(apply, list) else [apply]
+                    for ap in applies:
+                        if isinstance(ap, dict) and isinstance(ap.get("model"), str):
+                            tex = self._resolve_model_texture_member(version, ap["model"], set())
+                            if tex:
+                                return tex
+
+        return None
+
+    def _extract_texture_file(self, version: str, member: str) -> pathlib.Path | None:
+        cache_dir = pathlib.Path("data/texture_cache") / version
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        target_file = cache_dir / pathlib.Path(member).name
+        if target_file.exists():
+            return target_file
+
+        client_jar = self._version_root / version / f"{version}.client.jar"
+        if not client_jar.exists():
+            return None
+        try:
+            with zipfile.ZipFile(client_jar) as jar:
+                target_file.write_bytes(jar.read(member))
+            return target_file
+        except Exception:
+            return None
+
+    def _solid_icon(self, color: tuple[int, int, int]) -> tk.PhotoImage:
+        key = f"solid:{color}"
+        cached = self._block_icon_cache.get(key)
+        if cached:
+            return cached
+
+        img = tk.PhotoImage(width=16, height=16)
+        fill = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
+        img.put(fill, to=(0, 0, 16, 16))
+        img.put("#1f1f1f", to=(0, 0, 16, 1))
+        img.put("#1f1f1f", to=(0, 0, 1, 16))
+        img.put("#d9d9d9", to=(15, 0, 16, 16))
+        img.put("#d9d9d9", to=(0, 15, 16, 16))
+        self._block_icon_cache[key] = img
+        return img
+
+    def _texture_icon(self, version: str, block_name: str) -> tk.PhotoImage:
+        cache_key = f"{version}:{self._normalize_block(block_name)}"
+        cached = self._block_icon_cache.get(cache_key)
+        if cached:
+            return cached
+
+        member = self._find_texture_member(version, block_name)
+        if member:
+            texture = self._extract_texture_file(version, member)
+            if texture:
+                try:
+                    img = tk.PhotoImage(file=str(texture))
+                    if img.width() > 16 or img.height() > 16:
+                        sx = max(1, img.width() // 16)
+                        sy = max(1, img.height() // 16)
+                        img = img.subsample(sx, sy)
+                    self._block_icon_cache[cache_key] = img
+                    return img
+                except Exception:
+                    pass
+
+        fallback = self._solid_icon(self._block_color(block_name))
+        self._block_icon_cache[cache_key] = fallback
+        return fallback
+
+    def _pair_icon(self, source_block: str, target_block: str) -> tk.PhotoImage:
+        key = f"{self._current_source_version}:{source_block}|{self._current_target_version}:{target_block}"
+        cached = self._pair_icon_cache.get(key)
+        if cached:
+            return cached
+
+        src_img = self._texture_icon(self._current_source_version, source_block)
+        tgt_img = self._texture_icon(self._current_target_version, target_block)
+
+        pair = tk.PhotoImage(width=36, height=16)
+        pair.put("#f0f0f0", to=(0, 0, 36, 16))
+        pair.tk.call(pair, "copy", src_img, "-to", 0, 0)
+        pair.put("#555555", to=(17, 0, 19, 16))
+        pair.tk.call(pair, "copy", tgt_img, "-to", 20, 0)
+        self._pair_icon_cache[key] = pair
+        return pair
 
     def _refresh_tree(self) -> None:
         query = self.filter_var.get().strip().lower()
         for item in self.tree.get_children():
             self.tree.delete(item)
+
+        grouped: dict[str, list[dict[str, str]]] = {}
         for row in self._mapping_rows:
-            if query and query not in row["source"].lower() and query not in row["target"].lower():
+            if query and query not in row["source"].lower() and query not in row["target"].lower() and query not in row.get("group", "").lower():
                 continue
-            self.tree.insert(
+            grouped.setdefault(row.get("group", "прочее"), []).append(row)
+
+        self._group_children = {}
+        for group_name, rows in sorted(grouped.items(), key=lambda kv: kv[0]):
+            parent = self.tree.insert(
                 "",
                 tk.END,
-                values=(
-                    row["source"],
-                    row["target"],
-                    row["reason"],
-                    row["src_props"],
-                    row["dst_props"],
-                ),
+                text=f"{group_name} ({len(rows)})",
+                values=("", "", "group", "", ""),
+                tags=("group",),
+                open=True,
             )
+            self._group_children[parent] = rows
 
-    def _on_select(self, _event: tk.Event) -> None:
-        selected = self.tree.selection()
-        if not selected:
-            return
-        vals = self.tree.item(selected[0], "values")
-        if not vals:
-            return
-        src, tgt = vals[0], vals[1]
-        self.source_txt.configure(text=src)
-        self.target_txt.configure(text=tgt)
-        self._draw_preview(self.source_canvas, self.source_image, src, self._current_source_version, "source")
-        self._draw_preview(self.target_canvas, self.target_image, tgt, self._current_target_version, "target")
-
-    def _draw_preview(
-        self,
-        canvas: tk.Canvas,
-        image_label: ttk.Label,
-        block_name: str,
-        version: str,
-        slot: str,
-    ) -> None:
-        texture_file = self._find_texture_file(version, block_name)
-        if texture_file is not None:
-            img = tk.PhotoImage(file=str(texture_file))
-            self._photo_refs[slot] = img
-            image_label.configure(image=img)
-            canvas.delete("all")
-            return
-
-        image_label.configure(image="")
-        tr = categorize_block(block_name)
-        color = tr.color or (120, 120, 120)
-        c = f"#{color[0]:02x}{color[1]:02x}{color[2]:02x}"
-        canvas.delete("all")
-        canvas.create_rectangle(2, 2, 22, 22, fill=c, outline="#222")
-        canvas.create_line(2, 2, 22, 22, fill="#000")
-        canvas.create_line(22, 2, 2, 22, fill="#fff")
-
-    def _find_texture_file(self, version: str, block_name: str) -> pathlib.Path | None:
-        if not version:
-            return None
-
-        version_dir = self._version_root / version
-        client_jar = version_dir / f"{version}.client.jar"
-        if not client_jar.exists():
-            return None
-
-        names = self._texture_index.get(version)
-        if names is None:
-            try:
-                with zipfile.ZipFile(client_jar) as jar:
-                    names = set(jar.namelist())
-                self._texture_index[version] = names
-            except Exception:
-                return None
-
-        base = block_name.split("[", 1)[0]
-        if ":" in base:
-            base = base.split(":", 1)[1]
-        candidates = [base, f"{base}_top", f"{base}_side"]
-
-        texture_member = None
-        for candidate in candidates:
-            path = f"assets/minecraft/textures/block/{candidate}.png"
-            if path in names:
-                texture_member = path
-                break
-
-        if texture_member is None:
-            return None
-
-        cache_dir = pathlib.Path("data/texture_cache") / version
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        target_file = cache_dir / pathlib.Path(texture_member).name
-        if target_file.exists():
-            return target_file
-
-        try:
-            with zipfile.ZipFile(client_jar) as jar:
-                target_file.write_bytes(jar.read(texture_member))
-            return target_file
-        except Exception:
-            return None
+            for idx, row in enumerate(rows):
+                icon = self._pair_icon(row["source"], row["target"])
+                icon_key = f"row-{group_name}-{idx}"
+                self._photo_refs[icon_key] = icon
+                self.tree.insert(
+                    parent,
+                    tk.END,
+                    text="",
+                    image=icon,
+                    values=(
+                        row["source"],
+                        row["target"],
+                        row["reason"],
+                        row["src_props"],
+                        row["dst_props"],
+                    ),
+                    tags=("changed",),
+                )
 
 
 def launch_gui() -> None:
     root = tk.Tk()
     root.title("Schemcon")
-    root.geometry("1200x860")
+    root.geometry("1550x940")
     SchemconApp(root)
     root.mainloop()
 
