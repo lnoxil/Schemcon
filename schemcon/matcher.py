@@ -71,10 +71,18 @@ EXACT_BLOCK_MAPPINGS = {
     "potted_mangrove_propagule": "minecraft:potted_oak_sapling",
     "potted_flowering_azalea_bush": "minecraft:potted_azalea_bush",
     "potted_azalea_bush": "minecraft:potted_fern",
+    "barrel": "minecraft:chest",
+    "campfire": "minecraft:orange_stained_glass",
+    "soul_campfire": "minecraft:light_blue_stained_glass",
 }
 
 PREFER_FAMILIES = {"concrete", "wool"}
 DISCOURAGED_FAMILIES = {"terracotta"}
+DISCOURAGED_PATTERN_TOKENS = {
+    "glazed_terracotta",
+    "chiseled",
+    "shulker_box",
+}
 
 COLOR_TOKEN_MAP = {
     "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
@@ -164,11 +172,7 @@ def _family_group(family: str) -> str:
 
 
 def _air_if_missing_for_decorative(source_name: str, target_blocks: Set[str]) -> Optional[str]:
-    """Allow air only for truly hard decorative cases (candles for now)."""
-    src = _as_key(source_name)
-    if "candle" in src or "candle_cake" in src:
-        if "minecraft:air" in target_blocks or "air" in target_blocks:
-            return "minecraft:air"
+    """Do not remove blocks implicitly; explicit removals are handled separately."""
     return None
 
 
@@ -264,7 +268,29 @@ def _special_soft_match(source_name: str, target_blocks: Set[str]) -> Optional[s
             clean = _as_key(cand)
             if cand in target_blocks or clean in target_blocks:
                 return cand
+    if src in {"short_grass", "tall_grass", "fern", "large_fern"}:
+        for cand in [
+            "minecraft:grass",
+            "minecraft:tall_grass",
+            "minecraft:fern",
+            "minecraft:large_fern",
+            "minecraft:wheat",
+            "minecraft:carrots",
+            "minecraft:potatoes",
+            "minecraft:beetroots",
+            "minecraft:oak_sapling",
+            "minecraft:spruce_sapling",
+            "minecraft:dandelion",
+        ]:
+            clean = _as_key(cand)
+            if cand in target_blocks or clean in target_blocks:
+                return cand
     return None
+
+
+def _is_discouraged_pattern_block(block_name: str) -> bool:
+    base = _as_key(block_name)
+    return any(token in base for token in DISCOURAGED_PATTERN_TOKENS)
 
 
 def _same_shape_candidates(source_name: str, target_blocks: Set[str]) -> list[str]:
@@ -399,7 +425,7 @@ def _pick_shape_safe_match(
 
         if candidate_traits.family in PREFER_FAMILIES:
             score += 1.8
-        if candidate_traits.family in DISCOURAGED_FAMILIES or "glazed_terracotta" in candidate_clean:
+        if candidate_traits.family in DISCOURAGED_FAMILIES or _is_discouraged_pattern_block(candidate_clean):
             score -= 3.2
 
         # Penalize crossing broad groups (mineral/wood/plant).
@@ -521,7 +547,7 @@ def _pick_relaxed_safe_match(
 
         if candidate_traits.family in PREFER_FAMILIES:
             score += 1.2
-        if candidate_traits.family in DISCOURAGED_FAMILIES or "glazed_terracotta" in candidate_clean:
+        if candidate_traits.family in DISCOURAGED_FAMILIES or _is_discouraged_pattern_block(candidate_clean):
             score -= 2.4
         if source_traits.category == candidate_traits.category:
             score += 2.5
