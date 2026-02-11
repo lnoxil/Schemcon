@@ -138,6 +138,17 @@ def _to_blocks_payload(names: set[str]) -> dict[str, dict]:
     return payload
 
 
+def _merge_block_payloads(*payloads: dict[str, dict]) -> dict[str, dict]:
+    merged: dict[str, dict] = {}
+    for payload in payloads:
+        for name, data in payload.items():
+            if name not in merged:
+                merged[name] = dict(data)
+            else:
+                merged[name].update(data)
+    return merged
+
+
 def _write_registry_files(output_dir: pathlib.Path, blocks: dict[str, dict], source: str) -> tuple[list[pathlib.Path], str]:
     output_dir.mkdir(parents=True, exist_ok=True)
     blocks_path = output_dir / "blocks.json"
@@ -166,39 +177,65 @@ def ensure_registry_reports(
         return extracted, "server_reports"
 
     blocks_from_tags = _extract_block_names_from_server_tags(server_jar)
-    if blocks_from_tags:
-        return _write_registry_files(output_dir, _to_blocks_payload(blocks_from_tags), "server_tags_fallback")
+    tags_payload = _to_blocks_payload(blocks_from_tags) if blocks_from_tags else {}
 
+    client_payload: dict[str, dict] = {}
     if version_json is not None:
         client_jar = output_dir / f"{version}.client.jar"
         try:
-            download_client_jar(version_json, client_jar, session=session)
+            if not client_jar.exists():
+                download_client_jar(version_json, client_jar, session=session)
             client_names = _extract_block_names_from_client_jar(client_jar)
             if client_names:
-                return _write_registry_files(output_dir, _to_blocks_payload(client_names), "client_blockstates_fallback")
+                client_payload = _to_blocks_payload(client_names)
         except Exception:
             pass
 
-    blocks = _fetch_prismarine_blocks(version, session=session)
-    if blocks:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        blocks_path = output_dir / "blocks.json"
-        registries_path = output_dir / "registries.json"
-        blocks_path.write_text(json.dumps(blocks, indent=2), encoding="utf-8")
-        if not registries_path.exists():
-            registries_path.write_text("{}", encoding="utf-8")
-        return [blocks_path, registries_path], "prismarine_fallback"
+    prismarine_payload = _fetch_prismarine_blocks(version, session=session) or {}
+
+    merged = _merge_block_payloads(tags_payload, client_payload, prismarine_payload)
+    if merged:
+        sources = []
+        if tags_payload:
+            sources.append("server_tags")
+        if client_payload:
+            sources.append("client_blockstates")
+        if prismarine_payload:
+            sources.append("prismarine")
+        return _write_registry_files(output_dir, merged, "+".join(sources) or "generated_fallback")
 
     raise FileNotFoundError(
         "No reports found in server jar and all fallback sources were unavailable."
     )
 
 
+
+
+def _normalize_block_key(name: str) -> str:
+    key = str(name).strip()
+    if not key:
+        return "minecraft:air"
+    if key.startswith("#"):
+        return key
+    if ":" not in key:
+        return f"minecraft:{key}"
+    return key
 def load_blocks_report(report_path: pathlib.Path) -> dict:
     data = json.loads(report_path.read_text(encoding="utf-8"))
-    if "blocks" in data:
-        return data["blocks"]
-    return data
+    payload = data["blocks"] if "blocks" in data else data
+    if not isinstance(payload, dict):
+        return {}
+
+    normalized: dict[str, dict] = {}
+    for raw_name, info in payload.items():
+        name = _normalize_block_key(raw_name)
+        if name.startswith("#"):
+            continue
+        if isinstance(info, dict):
+            normalized[name] = info
+        else:
+            normalized[name] = {"id": info}
+    return normalized
 
 
 def load_registry(report_dir: pathlib.Path) -> dict:

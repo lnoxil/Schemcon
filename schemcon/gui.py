@@ -11,7 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 from .categories import categorize_block
 from .convert import convert_schematic
 from .gradient import build_gradient_map, load_gradient_map, save_gradient_map
-from .schem import export_fawe_compatible
+from .schem import export_fawe_compatible, load_schematic
 from .matcher import pick_best_match
 from .registry import (
     download_client_jar,
@@ -204,18 +204,33 @@ class SchemconApp(ttk.Frame):
             source_registry = load_registry(version_root / source_version)
             target_registry = load_registry(version_root / target_version)
             target_blocks = set(target_registry.keys())
-            gradient_map = self._build_or_load_gradient_map(source_version, target_version, set(source_registry.keys()), target_blocks)
+
+            input_palette = load_schematic(input_schem).palette
+            palette_blocks = set(input_palette.keys())
+            palette_bases = {name.split("[", 1)[0] for name in palette_blocks}
+
+            gradient_map = self._build_or_load_gradient_map(
+                source_version,
+                target_version,
+                palette_bases if palette_bases else set(source_registry.keys()),
+                target_blocks,
+            )
 
             mapping: dict[str, dict[str, str]] = {}
-            for block in sorted(source_registry.keys()):
+            for block in sorted(palette_blocks):
                 res = pick_best_match(block, target_blocks, gradient_map=gradient_map)
+                if res.target == "minecraft:air" and "[" in block:
+                    base = block.split("[", 1)[0]
+                    base_res = pick_best_match(base, target_blocks, gradient_map=gradient_map)
+                    if base_res.target != "minecraft:air":
+                        res = base_res
                 mapping[block] = {"target": res.target, "reason": res.reason}
 
             mapping_path.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
             self._log(f"Mapping сохранён: {mapping_path}")
 
             flat_mapping = {k: v["target"] for k, v in mapping.items()}
-            report = convert_schematic(input_schem, output_schem, flat_mapping)
+            report = convert_schematic(input_schem, output_schem, flat_mapping, allowed_targets=target_blocks)
             report_path = pathlib.Path(output_schem).with_suffix(".report.json")
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
             self._log(f"Схема конвертирована: {output_schem}")
@@ -263,11 +278,8 @@ class SchemconApp(ttk.Frame):
         if not jar_path.exists():
             download_server_jar(version_json, jar_path)
 
-        if blocks_path.exists():
-            self._log(f"Реестр уже есть: {version_dir}")
-        else:
-            _paths, source = ensure_registry_reports(version, jar_path, version_dir, version_json=version_json)
-            self._log(f"Реестр {version} подготовлен (source={source})")
+        _paths, source = ensure_registry_reports(version, jar_path, version_dir, version_json=version_json)
+        self._log(f"Реестр {version} обновлён (source={source})")
 
         client_jar = version_dir / f"{version}.client.jar"
         if not client_jar.exists():
