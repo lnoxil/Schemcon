@@ -8,24 +8,67 @@ from .schem import load_schematic, save_schematic
 
 
 SAFE_COLLISION_STATES = (
-    "minecraft:air",
     "minecraft:stone",
     "minecraft:dirt",
     "minecraft:cobblestone",
     "minecraft:oak_planks",
+    "minecraft:spruce_planks",
+    "minecraft:birch_planks",
+    "minecraft:jungle_planks",
+    "minecraft:acacia_planks",
+    "minecraft:dark_oak_planks",
     "minecraft:sand",
+    "minecraft:red_sand",
     "minecraft:glass",
     "minecraft:gravel",
     "minecraft:netherrack",
+    "minecraft:andesite",
+    "minecraft:diorite",
+    "minecraft:granite",
+    "minecraft:deepslate",
+    "minecraft:calcite",
+    "minecraft:smooth_stone",
+    "minecraft:terracotta",
+    "minecraft:white_wool",
+    "minecraft:gray_wool",
+    "minecraft:light_gray_wool",
+    "minecraft:black_wool",
 )
 
 
-def _pick_safe_collision_target(used_targets: dict[str, int], _palette_name: str, index: int) -> str:
+def _candidate_targets_from_mapping(mapping: dict[str, str] | dict[str, dict]) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for value in mapping.values():
+        raw = value.get("target") if isinstance(value, dict) else value
+        if not isinstance(raw, str) or not raw:
+            continue
+        normalized = raw if "[" in raw else _as_base_blockstate(raw)
+        if normalized == "minecraft:air" or normalized in seen:
+            continue
+        seen.add(normalized)
+        candidates.append(normalized)
+    return candidates
+
+
+def _pick_safe_collision_target(
+    used_targets: dict[str, int],
+    _palette_name: str,
+    index: int,
+    extra_candidates: list[str] | None = None,
+) -> str:
+    if extra_candidates:
+        for candidate in extra_candidates:
+            existing = used_targets.get(candidate)
+            if existing is None or existing == index:
+                return candidate
+
     for candidate in SAFE_COLLISION_STATES:
         existing = used_targets.get(candidate)
         if existing is None or existing == index:
             return candidate
-    # Last resort: fallback to air and let root sanitization reindex safely.
+
+    # Last resort: keep air only if absolutely no safe free target remains.
     return "minecraft:air"
 
 
@@ -36,21 +79,26 @@ def _split_blockstate(name: str) -> tuple[str, str | None]:
     return name, None
 
 
+def _as_base_blockstate(name: str) -> str:
+    base, _props = _split_blockstate(name)
+    return base
+
+
 def _resolve_target(name: str, mapping: dict[str, str]) -> str:
     direct = mapping.get(name)
     if direct:
         return direct
-    base, props = _split_blockstate(name)
+    base, _props = _split_blockstate(name)
     mapped_base = mapping.get(base)
     if mapped_base:
         mapped_name, mapped_props = _split_blockstate(mapped_base)
         if mapped_props:
             return mapped_base
-        # Keep original properties when block base does not change.
-        # This avoids collapsing many valid blockstates into one palette key.
-        if props and mapped_name == base:
-            return name
-        return mapped_name
+        # FAWE can return null block states when legacy/newer properties are kept on
+        # a base-only mapping (e.g. old property names that no longer exist). If the
+        # mapping does not explicitly define a full blockstate, always emit only the
+        # target base block id.
+        return _as_base_blockstate(mapped_name)
     return "minecraft:air"
 
 
@@ -59,18 +107,13 @@ def _resolve_smart_target(name: str, mapping: dict[str, dict]) -> dict:
     if isinstance(direct, dict):
         return direct
 
-    base, props = _split_blockstate(name)
+    base, _props = _split_blockstate(name)
     mapped_base = mapping.get(base)
     if isinstance(mapped_base, dict):
         mapped_target = str(mapped_base.get("target", base))
         mapped_name, mapped_props = _split_blockstate(mapped_target)
-        if props and not mapped_props and mapped_name == base:
-            return {
-                "target": name,
-                "reason": "preserve_state_props",
-                "confidence": mapped_base.get("confidence", 0.0),
-                "changed": False,
-            }
+        if not mapped_props:
+            mapped_target = _as_base_blockstate(mapped_name)
         return {
             "target": mapped_target,
             "reason": mapped_base.get("reason", "base_state_fallback"),
@@ -119,6 +162,7 @@ def apply_mapping_to_palette(palette: dict[str, int], mapping: dict[str, str]) -
     new_palette = {}
     warnings = []
     used_targets = {}
+    collision_candidates = _candidate_targets_from_mapping(mapping)
 
     air_index = palette.get("minecraft:air")
     if air_index is not None:
@@ -130,18 +174,20 @@ def apply_mapping_to_palette(palette: dict[str, int], mapping: dict[str, str]) -
         if name == "minecraft:air":
             continue
         target = _resolve_target(name, mapping)
+        was_unmapped_to_air = target == "minecraft:air" and name != "minecraft:air"
         if target == "minecraft:air" and air_index is not None and air_index != index:
-            target = _pick_safe_collision_target(used_targets, name, index)
+            target = _pick_safe_collision_target(used_targets, name, index, collision_candidates)
         existing = used_targets.get(target)
 
-        if target == "minecraft:air" and name != "minecraft:air":
-            warnings.append(f"Unmapped block {name}; replaced with minecraft:air for FAWE safety.")
+        if was_unmapped_to_air:
+            warnings.append(f"Unmapped block {name}; replaced with {target} for FAWE safety.")
 
         if existing is not None and existing != index:
-            fallback = _pick_safe_collision_target(used_targets, name, index)
-            warnings.append(
-                f"Collision for {name} -> {target}; replaced with {fallback} to keep palette ids valid for FAWE."
-            )
+            fallback = _pick_safe_collision_target(used_targets, name, index, collision_candidates)
+            if fallback != target:
+                warnings.append(
+                    f"Collision for {name} -> {target}; replaced with {fallback} to keep palette ids valid for FAWE."
+                )
             target = fallback
 
         new_palette[target] = index
@@ -158,6 +204,7 @@ def apply_smart_mapping_to_palette(
     warnings = []
     replacements = []
     used_targets = {}
+    collision_candidates = _candidate_targets_from_mapping(mapping)
 
     air_index = palette.get("minecraft:air")
     if air_index is not None:
@@ -180,8 +227,9 @@ def apply_smart_mapping_to_palette(
         mapping_info = _resolve_smart_target(name, mapping)
 
         target = mapping_info["target"]
+        was_unmapped_to_air = target == "minecraft:air" and name != "minecraft:air"
         if target == "minecraft:air" and air_index is not None and air_index != index:
-            target = _pick_safe_collision_target(used_targets, name, index)
+            target = _pick_safe_collision_target(used_targets, name, index, collision_candidates)
             mapping_info = {
                 "target": target,
                 "reason": "air_slot_preserved",
@@ -190,7 +238,7 @@ def apply_smart_mapping_to_palette(
             }
         existing = used_targets.get(target)
 
-        if target == "minecraft:air" and name != "minecraft:air":
+        if was_unmapped_to_air:
             warnings.append(
                 {
                     "type": "unmapped_to_air",
@@ -198,21 +246,22 @@ def apply_smart_mapping_to_palette(
                     "target": target,
                     "confidence": mapping_info.get("confidence", 0.0),
                     "reason": mapping_info.get("reason", "unmapped_to_air"),
-                    "message": f"Unmapped block {name}; replaced with minecraft:air for FAWE safety.",
+                    "message": f"Unmapped block {name}; replaced with {target} for FAWE safety.",
                 }
             )
 
         if existing is not None and existing != index:
-            fallback = _pick_safe_collision_target(used_targets, name, index)
-            warnings.append(
-                {
-                    "type": "collision",
-                    "source": name,
-                    "target": target,
-                    "index": index,
-                    "message": f"Collision: {name} -> {target} at index {index}; replaced with {fallback} for FAWE safety.",
-                }
-            )
+            fallback = _pick_safe_collision_target(used_targets, name, index, collision_candidates)
+            if fallback != target:
+                warnings.append(
+                    {
+                        "type": "collision",
+                        "source": name,
+                        "target": target,
+                        "index": index,
+                        "message": f"Collision: {name} -> {target} at index {index}; replaced with {fallback} for FAWE safety.",
+                    }
+                )
             target = fallback
             mapping_info = {
                 "target": target,
