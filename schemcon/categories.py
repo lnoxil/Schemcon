@@ -44,6 +44,10 @@ SHAPE_RULES = {
 }
 
 FAMILY_RULES = {
+    "grass": "grass",
+    "fern": "grass",
+    "vine": "vine",
+    "roots": "roots",
     "flower": "flower",
     "petals": "flower",
     "sapling": "sapling",
@@ -271,6 +275,8 @@ def _detect_block_type(category: str, family: str) -> str:
             return block_type
 
     if family in {"flower", "sapling", "azalea", "plant", "lichen", "bamboo"}:
+        return "plant"
+    if family in {"grass", "vine", "roots"}:
         return "plant"
     if family in {
         "glass",

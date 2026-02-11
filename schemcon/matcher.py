@@ -38,6 +38,10 @@ COLORLESS_BLOCK_MAPPINGS = {
     "moss_carpet": "vine",
     "azalea": "oak_sapling",
     "flowering_azalea": "oak_sapling",
+    "short_grass": "short_grass",
+    "tall_grass": "tall_grass",
+    "fern": "fern",
+    "large_fern": "large_fern",
 }
 
 EXACT_BLOCK_MAPPINGS = {
@@ -53,6 +57,19 @@ EXACT_BLOCK_MAPPINGS = {
     "bamboo_block": "minecraft:oak_log",
     "stripped_bamboo_block": "minecraft:stripped_oak_log",
     "bamboo_mosaic": "minecraft:oak_planks",
+    "bamboo_planks": "minecraft:oak_planks",
+    "bamboo_slab": "minecraft:oak_slab",
+    "bamboo_stairs": "minecraft:oak_stairs",
+    "bamboo_fence": "minecraft:oak_fence",
+    "bamboo_fence_gate": "minecraft:oak_fence_gate",
+    "bamboo_trapdoor": "minecraft:oak_trapdoor",
+    "bamboo_door": "minecraft:oak_door",
+    "bamboo_pressure_plate": "minecraft:oak_pressure_plate",
+    "bamboo_button": "minecraft:oak_button",
+    "mangrove_propagule": "minecraft:oak_sapling",
+    "potted_mangrove_propagule": "minecraft:potted_oak_sapling",
+    "potted_flowering_azalea_bush": "minecraft:potted_azalea_bush",
+    "potted_azalea_bush": "minecraft:potted_fern",
 }
 
 COLOR_TOKEN_MAP = {
@@ -133,11 +150,22 @@ def _strict_category_compatible(source_name: str, candidate_name: str) -> bool:
 def _family_group(family: str) -> str:
     if family in {"log", "planks"}:
         return "wood"
+    if family in {"grass", "vine", "roots", "flower", "sapling", "azalea", "plant", "lichen", "bamboo", "leaves"}:
+        return "plant"
     if family in {"stone", "ore", "brick", "deepslate", "tuff", "sand", "gravel", "dirt"}:
         return "mineral"
-    if family in {"leaves", "flower", "sapling", "grass", "mushroom", "bamboo", "vine", "roots"}:
+    if family in {"mushroom"}:
         return "plant"
     return family
+
+
+def _air_if_missing_for_decorative(source_name: str, target_blocks: Set[str]) -> Optional[str]:
+    """Allow air only for truly hard decorative cases (candles for now)."""
+    src = _as_key(source_name)
+    if "candle" in src or "candle_cake" in src:
+        if "minecraft:air" in target_blocks or "air" in target_blocks:
+            return "minecraft:air"
+    return None
 
 
 def _family_compatible(source_family: str, candidate_family: str) -> bool:
@@ -225,6 +253,16 @@ def _manual_override_match(source_name: str, target_blocks: Set[str]) -> Optiona
     return None
 
 
+def _same_shape_candidates(source_name: str, target_blocks: Set[str]) -> list[str]:
+    src_traits = categorize_block(source_name)
+    out: list[str] = []
+    for target in sorted(target_blocks):
+        base = target.split("[", 1)[0]
+        if categorize_block(base).shape == src_traits.shape:
+            out.append(base)
+    return out
+
+
 def _shape_suffix(base_name: str) -> str:
     base = _as_key(base_name)
     for suffix in ("_stairs", "_slab", "_wall", "_fence", "_fence_gate", "_trapdoor", "_door"):
@@ -277,6 +315,8 @@ def _pick_shape_safe_match(
 
     for candidate in sorted(target_blocks):
         candidate_base = candidate.split("[", 1)[0]
+        if _as_key(candidate_base) == "air":
+            continue
         candidate_traits = categorize_block(candidate_base)
 
         # ULTRA STRICT SAFETY CHECKS
@@ -416,6 +456,8 @@ def _pick_relaxed_safe_match(
 
     for candidate in sorted(target_blocks):
         candidate_base = candidate.split("[", 1)[0]
+        if _as_key(candidate_base) == "air":
+            continue
         candidate_traits = categorize_block(candidate_base)
 
         if not _strict_category_compatible(source_name, candidate_base):
@@ -527,6 +569,11 @@ def pick_best_match(
     if copper_match:
         return MatchResult(source=source_name, target=copper_match, reason="copper_stage_match", confidence=0.88)
 
+    # If exact/manual fallback failed, allow air only for selected decorative blocks.
+    air_candidate = _air_if_missing_for_decorative(source_name, target_blocks)
+    if air_candidate:
+        return MatchResult(source=source_name, target=air_candidate, reason="decorative_to_air", confidence=0.65)
+
     # Block doesn't exist in target - need to find replacement
     best_match = _pick_shape_safe_match(source_name, target_blocks, gradient_map=gradient_map)
     if not best_match:
@@ -574,5 +621,36 @@ def pick_best_match(
             confidence=confidence,
         )
 
-    # No match found - return air
+    # Last-resort: never drop arbitrary blocks to air.
+    # Pick nearest by shape, then by strict compatibility + color distance.
+    src_color = _resolve_color(source_name, gradient_map)
+    fallback_best: tuple[float, str] | None = None
+    for cand in _same_shape_candidates(source_name, target_blocks):
+        if not _strict_category_compatible(source_name, cand):
+            continue
+        if not is_safe_replacement_strict(source_name, cand):
+            continue
+        cand_color = _resolve_color(cand, gradient_map)
+        score = 0.0
+        src_traits = categorize_block(source_name)
+        cand_traits = categorize_block(cand)
+        if src_traits.block_type == cand_traits.block_type:
+            score += 2.0
+        if _family_group(src_traits.family) == _family_group(cand_traits.family):
+            score += 2.0
+        score += _color_token_penalty(source_name, cand)
+        if src_color and cand_color:
+            score += max(-9.0, 7.0 - (_color_distance(src_color, cand_color) / 20.0))
+        if fallback_best is None or score > fallback_best[0]:
+            fallback_best = (score, cand)
+
+    if fallback_best:
+        return MatchResult(source=source_name, target=fallback_best[1], reason="last_resort_shape_color", confidence=0.45)
+
+    # Absolute final fallback (still avoid air unless truly absent in target set)
+    for cand in sorted(target_blocks):
+        base = cand.split("[", 1)[0]
+        if _as_key(base) != "air":
+            return MatchResult(source=source_name, target=base, reason="last_resort_any_block", confidence=0.25)
+
     return MatchResult(source=source_name, target="minecraft:air", reason="no_match", confidence=0.0)
