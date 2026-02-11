@@ -1,32 +1,14 @@
 from __future__ import annotations
 
 from collections import Counter
+from math import ceil, log2
 from pathlib import Path
+
+import nbtlib
 
 from .matcher import pick_best_match
 from .schem import load_schematic, save_schematic
-
-
-SAFE_COLLISION_STATES = (
-    "minecraft:air",
-    "minecraft:stone",
-    "minecraft:dirt",
-    "minecraft:cobblestone",
-    "minecraft:oak_planks",
-    "minecraft:sand",
-    "minecraft:glass",
-    "minecraft:gravel",
-    "minecraft:netherrack",
-)
-
-
-def _pick_safe_collision_target(used_targets: dict[str, int], _palette_name: str, index: int) -> str:
-    for candidate in SAFE_COLLISION_STATES:
-        existing = used_targets.get(candidate)
-        if existing is None or existing == index:
-            return candidate
-    # Last resort: fallback to air and let root sanitization reindex safely.
-    return "minecraft:air"
+from .schem import _decode_packed_indices, _encode_packed_indices, _encode_varint
 
 
 def _split_blockstate(name: str) -> tuple[str, str | None]:
@@ -36,21 +18,100 @@ def _split_blockstate(name: str) -> tuple[str, str | None]:
     return name, None
 
 
+def _as_base_blockstate(name: str) -> str:
+    base, _props = _split_blockstate(name)
+    return base
+
+
+def _decode_varint_block_data(data: bytes, expected_count: int) -> list[int]:
+    values: list[int] = []
+    value = 0
+    shift = 0
+    for byte in data:
+        unsigned = byte & 0xFF
+        value |= (unsigned & 0x7F) << shift
+        if (unsigned & 0x80) == 0:
+            values.append(value)
+            if len(values) >= expected_count:
+                break
+            value = 0
+            shift = 0
+        else:
+            shift += 7
+            if shift > 35:
+                values.append(0)
+                value = 0
+                shift = 0
+
+    if len(values) < expected_count:
+        values.extend([0] * (expected_count - len(values)))
+
+    return values
+
+
+def _rebuild_root_palette_blockdata(
+    schematic,
+    targets_by_old_index: dict[int, str],
+) -> bool:
+    root = schematic.root
+    palette_tag = root.get("Palette")
+    block_data = root.get("BlockData")
+    if not isinstance(palette_tag, nbtlib.Compound) or block_data is None:
+        return False
+
+    width = int(root.get("Width", 0))
+    height = int(root.get("Height", 0))
+    length = int(root.get("Length", 0))
+    volume = width * height * length
+    if volume <= 0:
+        return False
+
+    version = int(root.get("Version", 2))
+    old_palette_size = max(1, len(palette_tag))
+    if version >= 3:
+        bits = max(2, ceil(log2(old_palette_size)))
+        decoded = _decode_packed_indices(list(block_data), volume, bits)
+    else:
+        decoded = _decode_varint_block_data(bytes(block_data), volume)
+
+    new_palette: dict[str, int] = {"minecraft:air": 0}
+    remapped: list[int] = []
+    for old_index in decoded:
+        target = targets_by_old_index.get(old_index, "minecraft:air")
+        if target not in new_palette:
+            new_palette[target] = len(new_palette)
+        remapped.append(new_palette[target])
+
+    if version >= 3:
+        bits_per_entry = max(2, ceil(log2(max(1, len(new_palette)))))
+        encoded = _encode_packed_indices(remapped, bits_per_entry)
+    else:
+        raw = bytearray()
+        for idx in remapped:
+            raw.extend(_encode_varint(idx))
+        encoded = bytes(raw)
+
+    root["Palette"] = nbtlib.Compound({name: nbtlib.Int(idx) for name, idx in new_palette.items()})
+    root["PaletteMax"] = nbtlib.Int(len(new_palette))
+    root["BlockData"] = nbtlib.ByteArray(list(encoded))
+    return True
+
+
 def _resolve_target(name: str, mapping: dict[str, str]) -> str:
     direct = mapping.get(name)
     if direct:
         return direct
-    base, props = _split_blockstate(name)
+    base, _props = _split_blockstate(name)
     mapped_base = mapping.get(base)
     if mapped_base:
         mapped_name, mapped_props = _split_blockstate(mapped_base)
         if mapped_props:
             return mapped_base
-        # Keep original properties when block base does not change.
-        # This avoids collapsing many valid blockstates into one palette key.
-        if props and mapped_name == base:
-            return name
-        return mapped_name
+        # FAWE can return null block states when legacy/newer properties are kept on
+        # a base-only mapping (e.g. old property names that no longer exist). If the
+        # mapping does not explicitly define a full blockstate, always emit only the
+        # target base block id.
+        return _as_base_blockstate(mapped_name)
     return "minecraft:air"
 
 
@@ -59,18 +120,13 @@ def _resolve_smart_target(name: str, mapping: dict[str, dict]) -> dict:
     if isinstance(direct, dict):
         return direct
 
-    base, props = _split_blockstate(name)
+    base, _props = _split_blockstate(name)
     mapped_base = mapping.get(base)
     if isinstance(mapped_base, dict):
         mapped_target = str(mapped_base.get("target", base))
         mapped_name, mapped_props = _split_blockstate(mapped_target)
-        if props and not mapped_props and mapped_name == base:
-            return {
-                "target": name,
-                "reason": "preserve_state_props",
-                "confidence": mapped_base.get("confidence", 0.0),
-                "changed": False,
-            }
+        if not mapped_props:
+            mapped_target = _as_base_blockstate(mapped_name)
         return {
             "target": mapped_target,
             "reason": mapped_base.get("reason", "base_state_fallback"),
@@ -118,34 +174,16 @@ def build_smart_mapping(
 def apply_mapping_to_palette(palette: dict[str, int], mapping: dict[str, str]) -> tuple[dict[str, int], list[str]]:
     new_palette = {}
     warnings = []
-    used_targets = {}
-
-    air_index = palette.get("minecraft:air")
-    if air_index is not None:
-        # Preserve air ID so fallback collisions never rewrite air to solid blocks.
-        used_targets["minecraft:air"] = air_index
-        new_palette["minecraft:air"] = air_index
+    air_index = palette.get("minecraft:air", 0)
+    new_palette["minecraft:air"] = air_index
 
     for name, index in palette.items():
         if name == "minecraft:air":
             continue
         target = _resolve_target(name, mapping)
-        if target == "minecraft:air" and air_index is not None and air_index != index:
-            target = _pick_safe_collision_target(used_targets, name, index)
-        existing = used_targets.get(target)
-
-        if target == "minecraft:air" and name != "minecraft:air":
-            warnings.append(f"Unmapped block {name}; replaced with minecraft:air for FAWE safety.")
-
-        if existing is not None and existing != index:
-            fallback = _pick_safe_collision_target(used_targets, name, index)
-            warnings.append(
-                f"Collision for {name} -> {target}; replaced with {fallback} to keep palette ids valid for FAWE."
-            )
-            target = fallback
-
+        if target == "minecraft:air":
+            warnings.append(f"Unmapped block {name}; replaced with {target} for FAWE safety.")
         new_palette[target] = index
-        used_targets[target] = index
 
     return new_palette, warnings
 
@@ -157,22 +195,18 @@ def apply_smart_mapping_to_palette(
     new_palette = {}
     warnings = []
     replacements = []
-    used_targets = {}
-
-    air_index = palette.get("minecraft:air")
-    if air_index is not None:
-        used_targets["minecraft:air"] = air_index
-        new_palette["minecraft:air"] = air_index
-        replacements.append(
-            {
-                "source": "minecraft:air",
-                "target": "minecraft:air",
-                "index": air_index,
-                "reason": "air_preserved",
-                "confidence": 1.0,
-                "changed": False,
-            }
-        )
+    air_index = palette.get("minecraft:air", 0)
+    new_palette["minecraft:air"] = air_index
+    replacements.append(
+        {
+            "source": "minecraft:air",
+            "target": "minecraft:air",
+            "index": air_index,
+            "reason": "air_preserved",
+            "confidence": 1.0,
+            "changed": False,
+        }
+    )
 
     for name, index in palette.items():
         if name == "minecraft:air":
@@ -180,17 +214,7 @@ def apply_smart_mapping_to_palette(
         mapping_info = _resolve_smart_target(name, mapping)
 
         target = mapping_info["target"]
-        if target == "minecraft:air" and air_index is not None and air_index != index:
-            target = _pick_safe_collision_target(used_targets, name, index)
-            mapping_info = {
-                "target": target,
-                "reason": "air_slot_preserved",
-                "confidence": 0.0,
-                "changed": name != target,
-            }
-        existing = used_targets.get(target)
-
-        if target == "minecraft:air" and name != "minecraft:air":
+        if target == "minecraft:air":
             warnings.append(
                 {
                     "type": "unmapped_to_air",
@@ -198,28 +222,9 @@ def apply_smart_mapping_to_palette(
                     "target": target,
                     "confidence": mapping_info.get("confidence", 0.0),
                     "reason": mapping_info.get("reason", "unmapped_to_air"),
-                    "message": f"Unmapped block {name}; replaced with minecraft:air for FAWE safety.",
+                    "message": f"Unmapped block {name}; replaced with {target} for FAWE safety.",
                 }
             )
-
-        if existing is not None and existing != index:
-            fallback = _pick_safe_collision_target(used_targets, name, index)
-            warnings.append(
-                {
-                    "type": "collision",
-                    "source": name,
-                    "target": target,
-                    "index": index,
-                    "message": f"Collision: {name} -> {target} at index {index}; replaced with {fallback} for FAWE safety.",
-                }
-            )
-            target = fallback
-            mapping_info = {
-                "target": target,
-                "reason": "collision_fallback",
-                "confidence": 0.0,
-                "changed": name != target,
-            }
 
         if mapping_info["changed"] and mapping_info["confidence"] < 0.5:
             warnings.append(
@@ -234,7 +239,6 @@ def apply_smart_mapping_to_palette(
             )
 
         new_palette[target] = index
-        used_targets[target] = index
 
         replacements.append(
             {
@@ -254,7 +258,9 @@ def convert_schematic(input_path: str, output_path: str, mapping: dict[str, str]
     schematic = load_schematic(input_path)
     palette = schematic.palette
     new_palette, warnings = apply_mapping_to_palette(palette, mapping)
-    schematic.replace_palette(new_palette)
+    targets_by_old_index = {int(index): _resolve_target(name, mapping) for name, index in palette.items()}
+    if not _rebuild_root_palette_blockdata(schematic, targets_by_old_index):
+        schematic.replace_palette(new_palette)
     save_schematic(schematic, output_path)
 
     counter = Counter()
@@ -303,7 +309,9 @@ def convert_schematic_smart(input_path: str, output_path: str, mapping: dict[str
     palette = schematic.palette
 
     new_palette, warnings, replacements = apply_smart_mapping_to_palette(palette, mapping)
-    schematic.replace_palette(new_palette)
+    targets_by_old_index = {int(index): _resolve_smart_target(name, mapping)["target"] for name, index in palette.items()}
+    if not _rebuild_root_palette_blockdata(schematic, targets_by_old_index):
+        schematic.replace_palette(new_palette)
     save_schematic(schematic, output_path)
 
     changed_replacements = [r for r in replacements if r["changed"]]
