@@ -32,15 +32,91 @@ def _as_base_blockstate(name: str) -> str:
 LEGACY_BLOCK_ALIASES = {
     "minecraft:grass": "minecraft:grass_block",
     "minecraft:grass_path": "minecraft:dirt_path",
+    "minecraft:flowing_water": "minecraft:water",
+    "minecraft:flowing_lava": "minecraft:lava",
+    "minecraft:brick_block": "minecraft:bricks",
+    "minecraft:melon_block": "minecraft:melon",
+    "minecraft:standing_sign": "minecraft:oak_sign",
+    "minecraft:wall_sign": "minecraft:oak_wall_sign",
+    "minecraft:wall_banner": "minecraft:white_wall_banner",
+    "minecraft:bed": "minecraft:red_bed",
+    "minecraft:wooden_button": "minecraft:oak_button",
+    "minecraft:double_fern": "minecraft:tall_grass",
+    "minecraft:double_stone_slab2": "minecraft:smooth_stone_slab",
+    "minecraft:red_sandstone_double_slab": "minecraft:red_sandstone_slab",
+    "minecraft:quartz_double_slab": "minecraft:quartz_slab",
+    "minecraft:acacia_double_slab": "minecraft:acacia_slab",
+    "minecraft:dark_oak_double_slab": "minecraft:dark_oak_slab",
+    "minecraft:cobblestone_double_slab": "minecraft:cobblestone_slab",
+}
+
+for _color in [
+    "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
+    "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black",
+]:
+    LEGACY_BLOCK_ALIASES[f"minecraft:{_color}_stained_hardened_clay"] = f"minecraft:{_color}_terracotta"
+
+
+_ALLOWED_PROPS_BY_EXACT = {
+    "minecraft:oak_button": {"face", "facing", "powered"},
+    "minecraft:heavy_weighted_pressure_plate": {"power"},
+    "minecraft:light_weighted_pressure_plate": {"power"},
+    "minecraft:oak_wall_sign": {"facing", "waterlogged"},
+    "minecraft:oak_sign": {"rotation", "waterlogged"},
+    "minecraft:white_wall_banner": {"facing"},
+    "minecraft:red_bed": {"facing", "occupied", "part"},
+}
+
+_ALLOWED_PROPS_BY_SUFFIX = {
+    "_slab": {"type", "waterlogged"},
+    "_stairs": {"facing", "half", "shape", "waterlogged"},
+    "_button": {"face", "facing", "powered"},
+    "_pressure_plate": {"power", "powered"},
+    "_wall_sign": {"facing", "waterlogged"},
+    "_sign": {"rotation", "waterlogged"},
+    "_wall_banner": {"facing"},
 }
 
 
 def _canonicalize_blockstate_name(value: str) -> str:
     base, props = _split_blockstate(value)
     canonical_base = LEGACY_BLOCK_ALIASES.get(base, base)
-    if props and canonical_base == base:
-        return value
-    return canonical_base
+    if not props:
+        return canonical_base
+
+    parsed_props: dict[str, str] = {}
+    for item in props.split(","):
+        if "=" not in item:
+            continue
+        key, raw_val = item.split("=", 1)
+        parsed_props[key.strip()] = raw_val.strip()
+
+    allowed = _ALLOWED_PROPS_BY_EXACT.get(canonical_base)
+    if allowed is None:
+        for suffix, suffix_allowed in _ALLOWED_PROPS_BY_SUFFIX.items():
+            if canonical_base.endswith(suffix):
+                allowed = suffix_allowed
+                break
+
+    if allowed is None:
+        return canonical_base
+
+    filtered = {k: v for k, v in parsed_props.items() if k in allowed}
+
+    # Legacy double slabs should become modern slabs with type=double.
+    if base.endswith("_double_slab") or base.endswith("_double_slab2") or "double_slab" in base:
+        filtered["type"] = "double"
+
+    # Legacy booleans on plates/buttons are represented differently between versions.
+    if canonical_base.endswith("_pressure_plate") and "powered" in filtered and "power" not in filtered:
+        filtered["power"] = "15" if filtered["powered"] == "true" else "0"
+        filtered.pop("powered", None)
+
+    # Keep deterministic property order to avoid palette bloat.
+    if not filtered:
+        return canonical_base
+    props_str = ",".join(f"{k}={filtered[k]}" for k in sorted(filtered))
+    return f"{canonical_base}[{props_str}]"
 
 
 def _sanitize_mapped_target(target: str, allowed_targets: set[str] | None = None) -> str:
