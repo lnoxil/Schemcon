@@ -34,6 +34,7 @@ from .schem import export_fawe_compatible, load_schematic
 class SchemconApp(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
         super().__init__(master)
+        self.configure(padding=8)
         self.pack(fill=tk.BOTH, expand=True)
 
         self._mapping_rows: list[dict[str, str]] = []
@@ -76,8 +77,33 @@ class SchemconApp(ttk.Frame):
         style = ttk.Style()
         if "clam" in style.theme_names():
             style.theme_use("clam")
+
+        bg = "#f4f6fb"
+        panel_bg = "#ffffff"
+        accent = "#2f6fed"
+        accent_hover = "#2458bd"
+
+        style.configure("TFrame", background=bg)
+        style.configure("TLabelframe", background=panel_bg, borderwidth=1, relief="solid")
+        style.configure("TLabelframe.Label", background=panel_bg)
+        style.configure("TLabel", background=bg)
+        style.configure("Panel.TLabelframe", background=panel_bg, borderwidth=1, relief="solid")
+        style.configure("Panel.TLabelframe.Label", background=panel_bg, font=("Segoe UI", 10, "bold"))
+
         style.configure("Header.TLabel", font=("Segoe UI", 14, "bold"))
-        style.configure("Primary.TButton", font=("Segoe UI", 10, "bold"))
+        style.configure(
+            "Primary.TButton",
+            font=("Segoe UI", 10, "bold"),
+            foreground="white",
+            background=accent,
+            padding=(10, 6),
+            borderwidth=0,
+        )
+        style.map("Primary.TButton", background=[("active", accent_hover), ("pressed", accent_hover)])
+        style.configure("Secondary.TButton", font=("Segoe UI", 9), padding=(8, 5))
+
+        style.configure("Mapping.Treeview", rowheight=22, font=("Segoe UI", 9), fieldbackground="white", background="white")
+        style.configure("Mapping.Treeview.Heading", font=("Segoe UI", 9, "bold"), padding=(4, 4))
 
     def _build_layout(self) -> None:
         self.columnconfigure(0, weight=1)
@@ -85,7 +111,7 @@ class SchemconApp(ttk.Frame):
         header = ttk.Label(self, text="Schemcon — авто-конвертация схем", style="Header.TLabel")
         header.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 8))
 
-        versions_panel = ttk.LabelFrame(self, text="Панель версий")
+        versions_panel = ttk.LabelFrame(self, text="Панель версий", style="Panel.TLabelframe")
         versions_panel.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
         versions_panel.columnconfigure(1, weight=1)
 
@@ -99,14 +125,25 @@ class SchemconApp(ttk.Frame):
         self.target_combo = ttk.Combobox(versions_panel, textvariable=self.target_version_var, state="readonly", width=18)
         self.target_combo.grid(row=1, column=1, sticky="w", padx=8, pady=6)
 
-        ttk.Button(versions_panel, text="Обновить список версий", command=self._refresh_version_choices).grid(
+        ttk.Button(versions_panel, text="Обновить список версий", command=self._refresh_version_choices, style="Secondary.TButton").grid(
             row=0, column=2, padx=8, pady=6
         )
-        ttk.Button(versions_panel, text="Загрузить выбранные версии (+client.jar)", command=self._download_selected_versions).grid(
+        ttk.Button(
+            versions_panel,
+            text="Загрузить выбранные версии (+client.jar)",
+            command=self._download_selected_versions,
+            style="Secondary.TButton",
+        ).grid(
             row=1, column=2, padx=8, pady=6
         )
 
-        form = ttk.LabelFrame(self, text="Параметры конвертации")
+        ttk.Label(
+            versions_panel,
+            text="Совет: сначала загрузите нужные версии, затем стройте mapping.",
+            foreground="#4f5d75",
+        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 6))
+
+        form = ttk.LabelFrame(self, text="Параметры конвертации", style="Panel.TLabelframe")
         form.grid(row=2, column=0, sticky="ew", padx=12, pady=6)
         form.columnconfigure(1, weight=1)
 
@@ -137,7 +174,16 @@ class SchemconApp(ttk.Frame):
             offvalue=False,
             anchor="w",
             justify="left",
+            bg="#ffffff",
+            activebackground="#ffffff",
         ).grid(row=4, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 6))
+
+        ttk.Label(
+            form,
+            text="Рекомендуется оставить галочку включённой для 1.7–1.12.",
+            foreground="#4f5d75",
+            background="#ffffff",
+        ).grid(row=4, column=0, columnspan=3, sticky="e", padx=8, pady=(2, 6))
 
         ttk.Button(
             form,
@@ -153,7 +199,7 @@ class SchemconApp(ttk.Frame):
             command=self._apply_mapping,
         ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
 
-        preview = ttk.LabelFrame(self, text="Лог mapping (группы блоков, сворачиваемые)")
+        preview = ttk.LabelFrame(self, text="Лог mapping (группы блоков, сворачиваемые)", style="Panel.TLabelframe")
         preview.grid(row=3, column=0, sticky="nsew", padx=12, pady=6)
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(1, weight=1)
@@ -167,12 +213,12 @@ class SchemconApp(ttk.Frame):
         filter_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         filter_entry.bind("<KeyRelease>", lambda _e: self._refresh_tree())
 
-        ttk.Button(top_controls, text="Изменить цель (выбранный блок)", command=self._edit_selected_mapping).grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(top_controls, text="Изменить цель для группы", command=self._edit_selected_group_mapping).grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(top_controls, text="Экспорт лога цветов", command=self._export_color_log).grid(row=0, column=3)
+        ttk.Button(top_controls, text="Изменить цель (выбранный блок)", command=self._edit_selected_mapping, style="Secondary.TButton").grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(top_controls, text="Изменить цель для группы", command=self._edit_selected_group_mapping, style="Secondary.TButton").grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(top_controls, text="Экспорт лога цветов", command=self._export_color_log, style="Secondary.TButton").grid(row=0, column=3)
 
         cols = ("source", "target", "reason", "src_props", "dst_props")
-        self.tree = ttk.Treeview(preview, columns=cols, show="tree headings", height=16)
+        self.tree = ttk.Treeview(preview, columns=cols, show="tree headings", height=16, style="Mapping.Treeview")
         self.tree.heading("#0", text="Текстуры src|dst")
         self.tree.column("#0", width=130, anchor="center")
 
@@ -195,7 +241,7 @@ class SchemconApp(ttk.Frame):
         self.tree.configure(yscrollcommand=ybar.set)
         ybar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=8)
 
-        log_frame = ttk.LabelFrame(self, text="Системный лог")
+        log_frame = ttk.LabelFrame(self, text="Системный лог", style="Panel.TLabelframe")
         log_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=(0, 12))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
