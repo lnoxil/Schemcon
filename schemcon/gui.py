@@ -13,6 +13,7 @@ from .categories import categorize_block
 from .convert import convert_schematic
 from .gradient import (
     build_gradient_map,
+    list_local_versions,
     load_gradient_map,
     refresh_gradient_maps_for_local_versions,
     save_gradient_map,
@@ -49,9 +50,11 @@ class SchemconApp(ttk.Frame):
         self._photo_refs: dict[str, tk.PhotoImage] = {}
         self._block_icon_cache: dict[str, tk.PhotoImage] = {}
         self._pair_icon_cache: dict[str, tk.PhotoImage] = {}
+        self._group_children: dict[str, list[dict[str, str]]] = {}
 
         self._build_style()
         self._build_layout()
+        self._refresh_version_choices()
         self._preload_local_gradient_maps()
 
     def _preload_local_gradient_maps(self) -> None:
@@ -81,53 +84,66 @@ class SchemconApp(ttk.Frame):
         header = ttk.Label(self, text="Schemcon — авто-конвертация схем", style="Header.TLabel")
         header.grid(row=0, column=0, sticky="w", padx=12, pady=(12, 8))
 
-        form = ttk.LabelFrame(self, text="Параметры")
-        form.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
+        versions_panel = ttk.LabelFrame(self, text="Панель версий")
+        versions_panel.grid(row=1, column=0, sticky="ew", padx=12, pady=6)
+        versions_panel.columnconfigure(1, weight=1)
+
+        ttk.Label(versions_panel, text="Из версии").grid(row=0, column=0, sticky="w", padx=8, pady=6)
+        self.source_version_var = tk.StringVar(value="1.21")
+        self.source_combo = ttk.Combobox(versions_panel, textvariable=self.source_version_var, state="readonly", width=18)
+        self.source_combo.grid(row=0, column=1, sticky="w", padx=8, pady=6)
+
+        ttk.Label(versions_panel, text="В версию").grid(row=1, column=0, sticky="w", padx=8, pady=6)
+        self.target_version_var = tk.StringVar(value="1.16.5")
+        self.target_combo = ttk.Combobox(versions_panel, textvariable=self.target_version_var, state="readonly", width=18)
+        self.target_combo.grid(row=1, column=1, sticky="w", padx=8, pady=6)
+
+        ttk.Button(versions_panel, text="Обновить список версий", command=self._refresh_version_choices).grid(
+            row=0, column=2, padx=8, pady=6
+        )
+        ttk.Button(versions_panel, text="Загрузить выбранные версии (+client.jar)", command=self._download_selected_versions).grid(
+            row=1, column=2, padx=8, pady=6
+        )
+
+        form = ttk.LabelFrame(self, text="Параметры конвертации")
+        form.grid(row=2, column=0, sticky="ew", padx=12, pady=6)
         form.columnconfigure(1, weight=1)
 
-        ttk.Label(form, text="Из версии").grid(row=0, column=0, sticky="w", padx=8, pady=6)
-        self.source_version_var = tk.StringVar(value="1.21")
-        ttk.Entry(form, textvariable=self.source_version_var, width=16).grid(row=0, column=1, sticky="w", padx=8, pady=6)
-
-        ttk.Label(form, text="В версию").grid(row=1, column=0, sticky="w", padx=8, pady=6)
-        self.target_version_var = tk.StringVar(value="1.16.5")
-        ttk.Entry(form, textvariable=self.target_version_var, width=16).grid(row=1, column=1, sticky="w", padx=8, pady=6)
-
-        ttk.Label(form, text="Входной .schem").grid(row=2, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(form, text="Входной .schem").grid(row=0, column=0, sticky="w", padx=8, pady=6)
         self.input_schem_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.input_schem_var).grid(row=2, column=1, sticky="ew", padx=8, pady=6)
-        ttk.Button(form, text="Выбрать", command=self._pick_input).grid(row=2, column=2, padx=8, pady=6)
+        ttk.Entry(form, textvariable=self.input_schem_var).grid(row=0, column=1, sticky="ew", padx=8, pady=6)
+        ttk.Button(form, text="Выбрать", command=self._pick_input).grid(row=0, column=2, padx=8, pady=6)
 
-        ttk.Label(form, text="Выходной .schem").grid(row=3, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(form, text="Выходной .schem").grid(row=1, column=0, sticky="w", padx=8, pady=6)
         self.output_schem_var = tk.StringVar(value="converted_output.schem")
-        ttk.Entry(form, textvariable=self.output_schem_var).grid(row=3, column=1, sticky="ew", padx=8, pady=6)
-        ttk.Button(form, text="Выбрать", command=self._pick_output).grid(row=3, column=2, padx=8, pady=6)
+        ttk.Entry(form, textvariable=self.output_schem_var).grid(row=1, column=1, sticky="ew", padx=8, pady=6)
+        ttk.Button(form, text="Выбрать", command=self._pick_output).grid(row=1, column=2, padx=8, pady=6)
 
-        ttk.Label(form, text="FAWE папка schematics (необязательно)").grid(row=4, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(form, text="FAWE папка schematics (необязательно)").grid(row=2, column=0, sticky="w", padx=8, pady=6)
         self.fawe_dir_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self.fawe_dir_var).grid(row=4, column=1, sticky="ew", padx=8, pady=6)
-        ttk.Button(form, text="Выбрать", command=self._pick_fawe_dir).grid(row=4, column=2, padx=8, pady=6)
+        ttk.Entry(form, textvariable=self.fawe_dir_var).grid(row=2, column=1, sticky="ew", padx=8, pady=6)
+        ttk.Button(form, text="Выбрать", command=self._pick_fawe_dir).grid(row=2, column=2, padx=8, pady=6)
 
-        ttk.Label(form, text="Имя файла в FAWE").grid(row=5, column=0, sticky="w", padx=8, pady=6)
+        ttk.Label(form, text="Имя файла в FAWE").grid(row=3, column=0, sticky="w", padx=8, pady=6)
         self.fawe_name_var = tk.StringVar(value="converted")
-        ttk.Entry(form, textvariable=self.fawe_name_var).grid(row=5, column=1, sticky="ew", padx=8, pady=6)
+        ttk.Entry(form, textvariable=self.fawe_name_var).grid(row=3, column=1, sticky="ew", padx=8, pady=6)
 
         ttk.Button(
             form,
-            text="1) Построить mapping и показать заменяемые блоки",
+            text="1) Построить mapping (только реальные замены)",
             style="Primary.TButton",
             command=self._run_auto,
-        ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 6))
+        ).grid(row=4, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 6))
 
         ttk.Button(
             form,
             text="2) Подтвердить mapping и конвертировать",
             style="Primary.TButton",
             command=self._apply_mapping,
-        ).grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        ).grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
 
-        preview = ttk.LabelFrame(self, text="Лог mapping (текстуры рядом с тегами)")
-        preview.grid(row=2, column=0, sticky="nsew", padx=12, pady=6)
+        preview = ttk.LabelFrame(self, text="Лог mapping (группы блоков, сворачиваемые)")
+        preview.grid(row=3, column=0, sticky="nsew", padx=12, pady=6)
         preview.columnconfigure(0, weight=1)
         preview.rowconfigure(1, weight=1)
 
@@ -140,13 +156,14 @@ class SchemconApp(ttk.Frame):
         filter_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         filter_entry.bind("<KeyRelease>", lambda _e: self._refresh_tree())
 
-        ttk.Button(top_controls, text="Изменить цель", command=self._edit_selected_mapping).grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(top_controls, text="Экспорт лога цветов", command=self._export_color_log).grid(row=0, column=2)
+        ttk.Button(top_controls, text="Изменить цель (выбранный блок)", command=self._edit_selected_mapping).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(top_controls, text="Изменить цель для группы", command=self._edit_selected_group_mapping).grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(top_controls, text="Экспорт лога цветов", command=self._export_color_log).grid(row=0, column=3)
 
         cols = ("source", "target", "reason", "src_props", "dst_props")
         self.tree = ttk.Treeview(preview, columns=cols, show="tree headings", height=16)
         self.tree.heading("#0", text="Текстуры src|dst")
-        self.tree.column("#0", width=110, anchor="center")
+        self.tree.column("#0", width=130, anchor="center")
 
         self.tree.heading("source", text="Исходный тег")
         self.tree.heading("target", text="Тег замены")
@@ -155,27 +172,55 @@ class SchemconApp(ttk.Frame):
         self.tree.heading("dst_props", text="Свойства замены")
         self.tree.column("source", width=320)
         self.tree.column("target", width=320)
-        self.tree.column("reason", width=120, anchor="center")
+        self.tree.column("reason", width=150, anchor="center")
         self.tree.column("src_props", width=240)
         self.tree.column("dst_props", width=240)
 
         self.tree.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=8)
         self.tree.tag_configure("changed", background="#fff5cc")
-        self.tree.tag_configure("same", background="#eaf7ea")
+        self.tree.tag_configure("group", background="#dde9f7")
 
         ybar = ttk.Scrollbar(preview, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=ybar.set)
         ybar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=8)
 
         log_frame = ttk.LabelFrame(self, text="Системный лог")
-        log_frame.grid(row=3, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        log_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=(0, 12))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         self.log = tk.Text(log_frame, height=8, wrap="word", state="disabled")
         self.log.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
 
-        self.rowconfigure(2, weight=1)
         self.rowconfigure(3, weight=1)
+        self.rowconfigure(4, weight=1)
+
+    def _refresh_version_choices(self) -> None:
+        local = list_local_versions(self._version_root)
+        common = ["1.21", "1.20.6", "1.20.4", "1.19.4", "1.18.2", "1.17.1", "1.16.5"]
+        values = sorted(set(common + local), key=lambda v: tuple(int(p) if p.isdigit() else p for p in v.split('.')), reverse=True)
+        self.source_combo["values"] = values
+        self.target_combo["values"] = values
+        if self.source_version_var.get() not in values and values:
+            self.source_version_var.set(values[0])
+        if self.target_version_var.get() not in values:
+            self.target_version_var.set("1.16.5" if "1.16.5" in values else (values[-1] if values else ""))
+        self._log(f"Доступные версии: {', '.join(values[:12])}{' ...' if len(values) > 12 else ''}")
+
+    def _download_selected_versions(self) -> None:
+        try:
+            source_version = self.source_version_var.get().strip()
+            target_version = self.target_version_var.get().strip()
+            if not source_version or not target_version:
+                raise ValueError("Выберите обе версии в выпадающем списке.")
+
+            manifest = fetch_version_manifest()
+            self._prepare_version_registry(source_version, manifest, self._version_root)
+            self._prepare_version_registry(target_version, manifest, self._version_root)
+            self._refresh_version_choices()
+            messagebox.showinfo("Готово", f"Версии подготовлены:\n{source_version}\n{target_version}")
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Ошибка загрузки версий: {exc}")
+            messagebox.showerror("Ошибка", str(exc))
 
     def _pick_input(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("Schematic", "*.schem")])
@@ -227,6 +272,10 @@ class SchemconApp(ttk.Frame):
         color = self._block_color(block_name)
         return f"shape={tr.shape}, family={tr.family}, color={color}"
 
+    def _group_key_for_block(self, block_name: str) -> str:
+        tr = categorize_block(block_name)
+        return f"{tr.category}/{tr.shape}"
+
     def _run_auto(self) -> None:
         try:
             source_version = self.source_version_var.get().strip()
@@ -234,7 +283,7 @@ class SchemconApp(ttk.Frame):
             input_schem = self.input_schem_var.get().strip()
             output_schem = self.output_schem_var.get().strip()
             if not source_version or not target_version:
-                raise ValueError("Укажите обе версии.")
+                raise ValueError("Выберите обе версии.")
             if not input_schem or not pathlib.Path(input_schem).exists():
                 raise FileNotFoundError("Укажите существующий входной .schem файл.")
             if not output_schem:
@@ -298,11 +347,14 @@ class SchemconApp(ttk.Frame):
             self._pending_mapping = mapping
             self._log(f"Mapping сохранён: {mapping_path}")
 
+            # Keep ONLY real replacements (source != target by base id)
             self._mapping_rows = []
             self._pair_icon_cache.clear()
             for src, meta in sorted(mapping.items()):
                 tgt = meta.get("target", "minecraft:air")
                 changed = self._normalize_block(src) != self._normalize_block(tgt)
+                if not changed:
+                    continue
                 self._mapping_rows.append(
                     {
                         "source": src,
@@ -312,12 +364,13 @@ class SchemconApp(ttk.Frame):
                         "dst_props": self._props(tgt),
                         "src_color": str(self._block_color(src)),
                         "dst_color": str(self._block_color(tgt)),
-                        "changed": "1" if changed else "0",
+                        "changed": "1",
+                        "group": self._group_key_for_block(src),
                     }
                 )
             self._refresh_tree()
-            self._log("Проверьте строки, при необходимости исправьте цель и нажмите подтверждение.")
-            messagebox.showinfo("Mapping готов", "Проверьте замену блоков в таблице и нажмите 'Подтвердить mapping и конвертировать'.")
+            self._log(f"Реальных замен: {len(self._mapping_rows)}")
+            messagebox.showinfo("Mapping готов", "Показаны только реальные замены, сгруппированные по типам.")
         except Exception as exc:  # noqa: BLE001
             self._log(f"Ошибка: {exc}")
             messagebox.showerror("Ошибка", str(exc))
@@ -358,11 +411,16 @@ class SchemconApp(ttk.Frame):
         if not selected:
             messagebox.showwarning("Нет выбора", "Выберите строку mapping для редактирования.")
             return
-        values = self.tree.item(selected[0], "values")
+        item = selected[0]
+        parent = self.tree.parent(item)
+        if parent == "":
+            messagebox.showwarning("Выбрана группа", "Для группы используйте кнопку 'Изменить цель для группы'.")
+            return
+
+        values = self.tree.item(item, "values")
         if not values:
             return
-        source_block = values[0]
-        current_target = values[1]
+        source_block, current_target = values[0], values[1]
 
         new_target = simpledialog.askstring(
             "Изменение замены",
@@ -397,18 +455,70 @@ class SchemconApp(ttk.Frame):
             row["reason"] = "manual_override"
             row["dst_props"] = self._props(new_target)
             row["dst_color"] = str(self._block_color(new_target))
-            row["changed"] = "1" if self._normalize_block(source_block) != self._normalize_block(new_target) else "0"
             break
 
         self._refresh_tree()
         self._log(f"Manual override: {source_block} -> {new_target}")
+
+    def _edit_selected_group_mapping(self) -> None:
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Нет выбора", "Выберите группу в mapping дереве.")
+            return
+
+        group_item = selected[0]
+        if self.tree.parent(group_item) != "":
+            group_item = self.tree.parent(group_item)
+
+        group_name = self.tree.item(group_item, "text")
+        rows = self._group_children.get(group_item, [])
+        if not rows:
+            messagebox.showwarning("Пустая группа", "В выбранной группе нет блоков для редактирования.")
+            return
+
+        new_target = simpledialog.askstring(
+            "Изменение группы",
+            f"Введите целевой блок для всей группы '{group_name}':",
+            initialvalue=rows[0]["target"],
+            parent=self,
+        )
+        if new_target is None:
+            return
+        new_target = new_target.strip()
+        if not new_target:
+            return
+        if ":" not in new_target:
+            new_target = f"minecraft:{new_target}"
+
+        base_target = self._normalize_block(new_target)
+        base_target_bare = base_target.replace("minecraft:", "")
+        if base_target not in self._current_target_blocks and base_target_bare not in self._current_target_blocks:
+            messagebox.showerror("Некорректная цель", f"Блок отсутствует в target версии: {base_target}")
+            return
+
+        changed_count = 0
+        for row in rows:
+            src = row["source"]
+            if src not in self._pending_mapping:
+                self._pending_mapping[src] = {}
+            self._pending_mapping[src]["target"] = new_target
+            self._pending_mapping[src]["reason"] = "manual_group_override"
+
+            row["target"] = new_target
+            row["reason"] = "manual_group_override"
+            row["dst_props"] = self._props(new_target)
+            row["dst_color"] = str(self._block_color(new_target))
+            changed_count += 1
+
+        self._refresh_tree()
+        self._log(f"Group override ({group_name}): {changed_count} блоков -> {new_target}")
 
     def _export_color_log(self) -> None:
         if not self._mapping_rows:
             messagebox.showwarning("Пусто", "Сначала постройте mapping.")
             return
 
-        lines = ["source_block\tsource_color\ttarget_block\ttarget_color\treason"]
+        lines = ["source_block\tsource_color\ttarget_block\ttarget_color\treason\tgroup"]
         for row in self._mapping_rows:
             lines.append(
                 "\t".join(
@@ -418,6 +528,7 @@ class SchemconApp(ttk.Frame):
                         row["target"],
                         row.get("dst_color", ""),
                         row["reason"],
+                        row.get("group", ""),
                     ]
                 )
             )
@@ -608,14 +719,12 @@ class SchemconApp(ttk.Frame):
 
         base = self._normalize_block(block_name).replace("minecraft:", "")
 
-        # 1) Try exact/common file names
         candidates = [base, f"{base}_side", f"{base}_front", f"{base}_top", f"{base}_end"]
         for candidate in candidates:
             member = f"assets/minecraft/textures/block/{candidate}.png"
             if member in members:
                 return member
 
-        # 2) Resolve through blockstate -> model -> textures (works for stairs/slabs/panes/etc.)
         blockstate_member = f"assets/minecraft/blockstates/{base}.json"
         blockstate = self._load_json_from_client_jar(version, blockstate_member)
         if blockstate:
@@ -727,33 +836,48 @@ class SchemconApp(ttk.Frame):
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        for idx, row in enumerate(self._mapping_rows):
-            if query and query not in row["source"].lower() and query not in row["target"].lower():
+        grouped: dict[str, list[dict[str, str]]] = {}
+        for row in self._mapping_rows:
+            if query and query not in row["source"].lower() and query not in row["target"].lower() and query not in row.get("group", "").lower():
                 continue
-            tag = "changed" if row.get("changed") == "1" else "same"
-            icon = self._pair_icon(row["source"], row["target"])
-            icon_key = f"row-{idx}"
-            self._photo_refs[icon_key] = icon
-            self.tree.insert(
+            grouped.setdefault(row.get("group", "прочее"), []).append(row)
+
+        self._group_children = {}
+        for group_name, rows in sorted(grouped.items(), key=lambda kv: kv[0]):
+            parent = self.tree.insert(
                 "",
                 tk.END,
-                text="",
-                image=icon,
-                values=(
-                    row["source"],
-                    row["target"],
-                    row["reason"],
-                    row["src_props"],
-                    row["dst_props"],
-                ),
-                tags=(tag,),
+                text=f"{group_name} ({len(rows)})",
+                values=("", "", "group", "", ""),
+                tags=("group",),
+                open=True,
             )
+            self._group_children[parent] = rows
+
+            for idx, row in enumerate(rows):
+                icon = self._pair_icon(row["source"], row["target"])
+                icon_key = f"row-{group_name}-{idx}"
+                self._photo_refs[icon_key] = icon
+                self.tree.insert(
+                    parent,
+                    tk.END,
+                    text="",
+                    image=icon,
+                    values=(
+                        row["source"],
+                        row["target"],
+                        row["reason"],
+                        row["src_props"],
+                        row["dst_props"],
+                    ),
+                    tags=("changed",),
+                )
 
 
 def launch_gui() -> None:
     root = tk.Tk()
     root.title("Schemcon")
-    root.geometry("1450x920")
+    root.geometry("1550x940")
     SchemconApp(root)
     root.mainloop()
 
