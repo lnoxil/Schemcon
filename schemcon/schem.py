@@ -12,6 +12,11 @@ CompoundLike = nbtlib.Compound
 
 _BLOCK_NAME_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9_./-]+$")
 _BLOCK_PROP_RE = re.compile(r"^[a-z0-9_./-]+$")
+LEGACY_BLOCK_ALIASES = {
+    "minecraft:grass": "minecraft:grass_block",
+    "minecraft:grass_path": "minecraft:dirt_path",
+}
+
 _SAFE_COLLISION_STATES = (
     "minecraft:stone",
     "minecraft:dirt",
@@ -31,6 +36,7 @@ def _normalize_block_name(name: str) -> str:
         return "minecraft:air"
     if ":" not in candidate:
         candidate = f"minecraft:{candidate}"
+    candidate = LEGACY_BLOCK_ALIASES.get(candidate, candidate)
     # Проверяем только базовое имя без properties
     base_name = candidate.split("[")[0]
     if not _BLOCK_NAME_RE.fullmatch(base_name):
@@ -51,9 +57,18 @@ def _sanitize_properties(props: dict[str, str]) -> dict[str, str]:
 
 
 def _normalize_blockstate_string(value: str) -> str:
-    base, props = _parse_blockstate(value)
-    base = _normalize_block_name(base)
+    raw_base, props = _parse_blockstate(value)
+    base = _normalize_block_name(raw_base)
     props = _sanitize_properties(props)
+
+    # If legacy id was canonicalized (e.g. grass_path -> dirt_path),
+    # drop incoming properties to avoid producing invalid target states.
+    raw_norm = (raw_base or "").strip().lower()
+    if ":" not in raw_norm and raw_norm:
+        raw_norm = f"minecraft:{raw_norm}"
+    if LEGACY_BLOCK_ALIASES.get(raw_norm) == base and raw_norm != base:
+        props = {}
+
     if props:
         parts = [f"{key}={val}" for key, val in sorted(props.items())]
         return f"{base}[{','.join(parts)}]"
