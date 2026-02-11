@@ -213,12 +213,13 @@ class SchemconApp(ttk.Frame):
         filter_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         filter_entry.bind("<KeyRelease>", lambda _e: self._refresh_tree())
 
-        ttk.Button(top_controls, text="Изменить цель (выбранный блок)", command=self._edit_selected_mapping, style="Secondary.TButton").grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(top_controls, text="Изменить цель (выбранные блоки)", command=self._edit_selected_mapping, style="Secondary.TButton").grid(row=0, column=1, padx=(0, 8))
         ttk.Button(top_controls, text="Изменить цель для группы", command=self._edit_selected_group_mapping, style="Secondary.TButton").grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(top_controls, text="Экспорт лога цветов", command=self._export_color_log, style="Secondary.TButton").grid(row=0, column=3)
+        ttk.Button(top_controls, text="Выделить все блоки", command=self._select_all_mapping_rows, style="Secondary.TButton").grid(row=0, column=3, padx=(0, 8))
+        ttk.Button(top_controls, text="Экспорт лога цветов", command=self._export_color_log, style="Secondary.TButton").grid(row=0, column=4)
 
         cols = ("source", "target", "reason", "src_props", "dst_props")
-        self.tree = ttk.Treeview(preview, columns=cols, show="tree headings", height=16, style="Mapping.Treeview")
+        self.tree = ttk.Treeview(preview, columns=cols, show="tree headings", height=16, style="Mapping.Treeview", selectmode="extended")
         self.tree.heading("#0", text="Текстуры src|dst")
         self.tree.column("#0", width=130, anchor="center")
 
@@ -234,6 +235,7 @@ class SchemconApp(ttk.Frame):
         self.tree.column("dst_props", width=240)
 
         self.tree.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        self.tree.bind("<Control-a>", self._select_all_mapping_rows)
         self.tree.tag_configure("changed", background="#fff5cc")
         self.tree.tag_configure("group", background="#dde9f7")
 
@@ -551,25 +553,60 @@ class SchemconApp(ttk.Frame):
             self._log(f"Ошибка: {exc}")
             messagebox.showerror("Ошибка", str(exc))
 
+    def _selected_leaf_items(self) -> list[str]:
+        selected = list(self.tree.selection())
+        leaf_items: list[str] = []
+        seen: set[str] = set()
+
+        for item in selected:
+            if self.tree.parent(item) == "":
+                children = self.tree.get_children(item)
+                for child in children:
+                    if child not in seen:
+                        leaf_items.append(child)
+                        seen.add(child)
+            elif item not in seen:
+                leaf_items.append(item)
+                seen.add(item)
+
+        return leaf_items
+
+    def _select_all_mapping_rows(self, _event: object | None = None) -> str:
+        leaf_items: list[str] = []
+        for group_item in self.tree.get_children(""):
+            leaf_items.extend(self.tree.get_children(group_item))
+        if leaf_items:
+            self.tree.selection_set(leaf_items)
+            self.tree.focus(leaf_items[0])
+        return "break"
+
     def _edit_selected_mapping(self) -> None:
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showwarning("Нет выбора", "Выберите строку mapping для редактирования.")
-            return
-        item = selected[0]
-        parent = self.tree.parent(item)
-        if parent == "":
-            messagebox.showwarning("Выбрана группа", "Для группы используйте кнопку 'Изменить цель для группы'.")
+        leaf_items = self._selected_leaf_items()
+        if not leaf_items:
+            messagebox.showwarning("Нет выбора", "Выберите один или несколько блоков в mapping для редактирования.")
             return
 
-        values = self.tree.item(item, "values")
-        if not values:
+        selected_rows: list[tuple[str, str]] = []
+        for item in leaf_items:
+            values = self.tree.item(item, "values")
+            if not values:
+                continue
+            selected_rows.append((values[0], values[1]))
+
+        if not selected_rows:
+            messagebox.showwarning("Нет выбора", "Выбраны только группы без блоков в текущем фильтре.")
             return
-        source_block, current_target = values[0], values[1]
+
+        current_target = selected_rows[0][1]
+        title = "Изменение замены"
+        prompt = "Введите целевой блок (например minecraft:red_wool):"
+        if len(selected_rows) > 1:
+            title = "Массовое изменение"
+            prompt = f"Введите целевой блок для {len(selected_rows)} выбранных блоков:"
 
         new_target = simpledialog.askstring(
-            "Изменение замены",
-            "Введите целевой блок (например minecraft:red_wool):",
+            title,
+            prompt,
             initialvalue=current_target,
             parent=self,
         )
@@ -588,22 +625,28 @@ class SchemconApp(ttk.Frame):
             messagebox.showerror("Некорректная цель", f"Блок отсутствует в target версии: {base_target}")
             return
 
-        if source_block not in self._pending_mapping:
-            self._pending_mapping[source_block] = {}
-        self._pending_mapping[source_block]["target"] = new_target
-        self._pending_mapping[source_block]["reason"] = "manual_override"
+        selected_sources = {src for src, _ in selected_rows}
+        rows_by_source = {row["source"]: row for row in self._mapping_rows}
+        reason = "manual_override" if len(selected_rows) == 1 else "manual_bulk_override"
 
-        for row in self._mapping_rows:
-            if row["source"] != source_block:
-                continue
-            row["target"] = new_target
-            row["reason"] = "manual_override"
-            row["dst_props"] = self._props(new_target)
-            row["dst_color"] = str(self._block_color(new_target))
-            break
+        for source_block in selected_sources:
+            if source_block not in self._pending_mapping:
+                self._pending_mapping[source_block] = {}
+            self._pending_mapping[source_block]["target"] = new_target
+            self._pending_mapping[source_block]["reason"] = reason
+
+            row = rows_by_source.get(source_block)
+            if row is not None:
+                row["target"] = new_target
+                row["reason"] = reason
+                row["dst_props"] = self._props(new_target)
+                row["dst_color"] = str(self._block_color(new_target))
 
         self._refresh_tree()
-        self._log(f"Manual override: {source_block} -> {new_target}")
+        if len(selected_rows) == 1:
+            self._log(f"Manual override: {selected_rows[0][0]} -> {new_target}")
+        else:
+            self._log(f"Bulk override: {len(selected_rows)} блоков -> {new_target}")
 
     def _edit_selected_group_mapping(self) -> None:
         selected = self.tree.selection()
