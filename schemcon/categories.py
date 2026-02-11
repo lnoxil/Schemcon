@@ -67,6 +67,14 @@ FAMILY_RULES = {
     "prismarine": "prismarine",
     "nether": "nether",
     "end": "end",
+    "copper": "copper",
+    "oxidized": "copper",
+    "weathered": "copper",
+    "exposed": "copper",
+    "waxed": "copper",
+    "azalea": "azalea",
+    "lichen": "lichen",
+    "dripleaf": "plant",
 }
 
 BLOCK_CATEGORIES = {
@@ -110,6 +118,8 @@ BLOCK_CATEGORIES = {
     "dark_oak_sapling": "sapling",
     "cherry_sapling": "sapling",
     "mangrove_propagule": "sapling",
+    "azalea": "sapling",
+    "flowering_azalea": "sapling",
     "wheat": "crop",
     "carrots": "crop",
     "potatoes": "crop",
@@ -126,6 +136,9 @@ BLOCK_CATEGORIES = {
     "twisting_vines": "vine",
     "cave_vines": "vine",
     "hanging_roots": "roots",
+    "glow_lichen": "vine",
+    "small_dripleaf": "water_plant",
+    "big_dripleaf": "water_plant",
     "mangrove_roots": "roots",
     "bamboo": "bamboo",
     "bamboo_sapling": "bamboo",
@@ -244,9 +257,9 @@ def _detect_block_type(category: str, family: str) -> str:
         if category in categories:
             return block_type
 
-    if family in {"flower", "sapling"}:
+    if family in {"flower", "sapling", "azalea", "plant", "lichen"}:
         return "plant"
-    if family in {"glass", "wool", "concrete", "stone", "dirt"}:
+    if family in {"glass", "wool", "concrete", "stone", "dirt", "copper", "planks", "log"}:
         return "solid"
 
     return "solid"

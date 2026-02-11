@@ -34,6 +34,8 @@ COLORLESS_BLOCK_MAPPINGS = {
     "small_dripleaf": "vine",
     "spore_blossom": "vine",
     "moss_carpet": "vine",
+    "azalea": "oak_sapling",
+    "flowering_azalea": "oak_sapling",
 }
 
 
@@ -168,6 +170,43 @@ def _resolve_color(
 
     # Fallback from color keyword in block id (e.g. red_wool, light_blue_glass)
     return categorize_block(block_name).color
+
+
+def _shape_suffix(base_name: str) -> str:
+    base = _as_key(base_name)
+    for suffix in ("_stairs", "_slab", "_wall", "_fence", "_fence_gate", "_trapdoor", "_door"):
+        if base.endswith(suffix):
+            return suffix
+    return ""
+
+
+def _pick_copper_stage_match(source_name: str, target_blocks: Set[str]) -> Optional[str]:
+    src = _as_key(source_name)
+    if "copper" not in src:
+        return None
+
+    shape = _shape_suffix(source_name)
+    # Keep oxidation hue logic: orange->warm, exposed->tan, weathered->teal, oxidized->green/blue.
+    if "oxidized" in src:
+        bases = ["warped", "dark_prismarine", "prismarine"]
+    elif "weathered" in src:
+        bases = ["prismarine", "dark_prismarine", "warped"]
+    elif "exposed" in src:
+        bases = ["cut_sandstone", "smooth_sandstone", "sandstone"]
+    else:
+        bases = ["cut_red_sandstone", "red_sandstone", "terracotta"]
+
+    candidates: list[str] = []
+    for block in target_blocks:
+        base = _as_key(block)
+        if shape and not base.endswith(shape):
+            continue
+        if any(k in base for k in bases):
+            candidates.append(block.split("[", 1)[0])
+
+    if not candidates:
+        return None
+    return sorted(set(candidates))[0]
 
 
 def _pick_shape_safe_match(
@@ -381,6 +420,11 @@ def pick_best_match(
                 confidence=0.95,
             )
 
+    # Copper stage-aware fallback first (prevents oxidized->orange regressions).
+    copper_match = _pick_copper_stage_match(source_name, target_blocks)
+    if copper_match:
+        return MatchResult(source=source_name, target=copper_match, reason="copper_stage_match", confidence=0.88)
+
     # Block doesn't exist in target - need to find replacement
     best_match = _pick_shape_safe_match(source_name, target_blocks, gradient_map=gradient_map)
     if not best_match:
@@ -399,7 +443,12 @@ def pick_best_match(
                 and _family_compatible(src_traits.family, cand_traits.family)
                 and _special_plant_compatible(source_name, candidate)
             ):
-                best_match = candidate
+                src_color = _resolve_color(source_name, gradient_map)
+                cand_color = _resolve_color(candidate, gradient_map)
+                if src_color and cand_color and _color_distance(src_color, cand_color) > 110:
+                    pass
+                else:
+                    best_match = candidate
 
     if best_match:
         # Calculate confidence based on category match
