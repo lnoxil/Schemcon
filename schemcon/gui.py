@@ -196,7 +196,10 @@ class SchemconApp(ttk.Frame):
 
     def _refresh_version_choices(self) -> None:
         local = list_local_versions(self._version_root)
-        common = ["1.21", "1.20.6", "1.20.4", "1.19.4", "1.18.2", "1.17.1", "1.16.5"]
+        common = [
+            "1.21", "1.20.6", "1.20.4", "1.19.4", "1.18.2", "1.17.1", "1.16.5",
+            "1.15.2", "1.14.4", "1.13.2", "1.12.2", "1.11.2", "1.10.2", "1.9.4", "1.8.9", "1.7.10",
+        ]
         values = sorted(set(common + local), key=lambda v: tuple(int(p) if p.isdigit() else p for p in v.split('.')), reverse=True)
         self.source_combo["values"] = values
         self.target_combo["values"] = values

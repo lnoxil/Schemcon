@@ -45,6 +45,7 @@ SHAPE_RULES = {
 
 FAMILY_RULES = {
     "flower": "flower",
+    "petals": "flower",
     "sapling": "sapling",
     "coral": "coral",
     "glass": "glass",
@@ -64,6 +65,17 @@ FAMILY_RULES = {
     "brick": "brick",
     "tuff": "tuff",
     "deepslate": "deepslate",
+    "blackstone": "blackstone",
+    "calcite": "stone",
+    "dripstone": "stone",
+    "amethyst": "amethyst",
+    "mud": "dirt",
+    "moss": "plant",
+    "bookshelf": "planks",
+    "bamboo_block": "log",
+    "bamboo_mosaic": "planks",
+    "cherry": "planks",
+    "mangrove": "planks",
     "prismarine": "prismarine",
     "nether": "nether",
     "end": "end",
@@ -139,6 +151,7 @@ BLOCK_CATEGORIES = {
     "glow_lichen": "vine",
     "small_dripleaf": "water_plant",
     "big_dripleaf": "water_plant",
+    "pink_petals": "flower_small",
     "mangrove_roots": "roots",
     "bamboo": "bamboo",
     "bamboo_sapling": "bamboo",
@@ -257,9 +270,23 @@ def _detect_block_type(category: str, family: str) -> str:
         if category in categories:
             return block_type
 
-    if family in {"flower", "sapling", "azalea", "plant", "lichen"}:
+    if family in {"flower", "sapling", "azalea", "plant", "lichen", "bamboo"}:
         return "plant"
-    if family in {"glass", "wool", "concrete", "stone", "dirt", "copper", "planks", "log"}:
+    if family in {
+        "glass",
+        "wool",
+        "concrete",
+        "stone",
+        "dirt",
+        "copper",
+        "planks",
+        "log",
+        "deepslate",
+        "blackstone",
+        "prismarine",
+        "amethyst",
+        "brick",
+    }:
         return "solid"
 
     return "solid"

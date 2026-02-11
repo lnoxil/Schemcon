@@ -32,10 +32,32 @@ COLORLESS_BLOCK_MAPPINGS = {
     "hanging_roots": "vine",
     "big_dripleaf": "lily_pad",
     "small_dripleaf": "vine",
+    "big_dripleaf_stem": "oak_fence",
+    "small_dripleaf_stem": "oak_fence",
     "spore_blossom": "vine",
     "moss_carpet": "vine",
     "azalea": "oak_sapling",
     "flowering_azalea": "oak_sapling",
+}
+
+EXACT_BLOCK_MAPPINGS = {
+    "amethyst_block": "minecraft:purple_wool",
+    "budding_amethyst": "minecraft:purple_wool",
+    "amethyst_cluster": "minecraft:purple_stained_glass",
+    "small_amethyst_bud": "minecraft:purple_stained_glass",
+    "medium_amethyst_bud": "minecraft:purple_stained_glass",
+    "large_amethyst_bud": "minecraft:purple_stained_glass",
+    "pointed_dripstone": "minecraft:oak_fence",
+    "dripstone_block": "minecraft:stone",
+    "pink_petals": "minecraft:pink_tulip",
+    "bamboo_block": "minecraft:oak_log",
+    "stripped_bamboo_block": "minecraft:stripped_oak_log",
+    "bamboo_mosaic": "minecraft:oak_planks",
+}
+
+COLOR_TOKEN_MAP = {
+    "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
+    "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black",
 }
 
 
@@ -172,6 +194,37 @@ def _resolve_color(
     return categorize_block(block_name).color
 
 
+def _extract_color_tokens(block_name: str) -> set[str]:
+    key = _as_key(block_name)
+    found: set[str] = set()
+    for token in sorted(COLOR_TOKEN_MAP, key=len, reverse=True):
+        if token in key:
+            found.add(token)
+    return found
+
+
+def _color_token_penalty(source_name: str, candidate_name: str) -> float:
+    src_colors = _extract_color_tokens(source_name)
+    cand_colors = _extract_color_tokens(candidate_name)
+    if not src_colors or not cand_colors:
+        return 0.0
+    if src_colors & cand_colors:
+        return 1.2
+    return -8.5
+
+
+def _manual_override_match(source_name: str, target_blocks: Set[str]) -> Optional[str]:
+    src = _as_key(source_name)
+    for key in sorted(EXACT_BLOCK_MAPPINGS.keys(), key=len, reverse=True):
+        replacement = EXACT_BLOCK_MAPPINGS[key]
+        if key not in src:
+            continue
+        repl_clean = _as_key(replacement)
+        if replacement in target_blocks or repl_clean in target_blocks:
+            return replacement
+    return None
+
+
 def _shape_suffix(base_name: str) -> str:
     base = _as_key(base_name)
     for suffix in ("_stairs", "_slab", "_wall", "_fence", "_fence_gate", "_trapdoor", "_door"):
@@ -220,6 +273,8 @@ def _pick_shape_safe_match(
 
     best: tuple[float, str] | None = None
 
+    source_color_tokens = _extract_color_tokens(source_name)
+
     for candidate in sorted(target_blocks):
         candidate_base = candidate.split("[", 1)[0]
         candidate_traits = categorize_block(candidate_base)
@@ -240,6 +295,10 @@ def _pick_shape_safe_match(
             continue
         if source_traits.block_type != "liquid" and candidate_traits.block_type == "liquid":
             continue
+        if source_traits.block_type == "solid" and candidate_traits.block_type == "plant":
+            continue
+        if source_traits.block_type == "plant" and candidate_traits.block_type == "solid":
+            continue
 
         # Avoid silly substitutions across incompatible families (e.g. stone->bamboo).
         if not _family_compatible(source_traits.family, candidate_traits.family):
@@ -252,6 +311,18 @@ def _pick_shape_safe_match(
         candidate_clean = _as_key(candidate_base)
         source_clean = _as_key(source_name)
         if source_traits.shape == "full" and (candidate_clean in SMALL_MODEL_BLOCKS or _is_small_model(candidate_traits)) and source_clean not in SMALL_MODEL_BLOCKS and not _is_small_model(source_traits):
+            continue
+
+        # Keep full blocks from becoming wood if source is mineral-like.
+        if (
+            source_traits.shape == "full"
+            and source_traits.family in {"stone", "deepslate", "blackstone", "brick", "ore", "dirt", "amethyst"}
+            and candidate_traits.family in {"log", "planks"}
+        ):
+            continue
+
+        # Bamboo block is a full log-like block, never map to thin bamboo plant.
+        if "bamboo_block" in source_clean and candidate_clean == "bamboo":
             continue
 
         # Shape is the most important rule for schematic geometry.
@@ -270,6 +341,10 @@ def _pick_shape_safe_match(
         if source_traits.family == candidate_traits.family:
             score += 3.5
 
+        # Penalize crossing broad groups (mineral/wood/plant).
+        if _family_group(source_traits.family) != _family_group(candidate_traits.family):
+            score -= 4.5
+
         # Preserve category if available.
         if source_traits.category == candidate_traits.category:
             score += 4.5
@@ -284,6 +359,14 @@ def _pick_shape_safe_match(
             dist = _color_distance(src_color, cand_color)
             # Strongly penalize large mismatches so blue doesn't become red/brown.
             score += max(-6.0, 6.5 - (dist / 28.0))
+
+        score += _color_token_penalty(source_name, candidate_base)
+
+        # Keep color families aligned when source has explicit color token.
+        if source_color_tokens:
+            cand_colors = _extract_color_tokens(candidate_base)
+            if cand_colors and not (source_color_tokens & cand_colors):
+                score -= 2.5
 
         # Token overlap helps with wood variants (oak/cherry/etc.) and similar naming.
         overlap = len(source_traits.tokens & candidate_traits.tokens)
@@ -344,6 +427,10 @@ def _pick_relaxed_safe_match(
             continue
         if source_traits.block_type != "liquid" and candidate_traits.block_type == "liquid":
             continue
+        if source_traits.block_type == "solid" and candidate_traits.block_type == "plant":
+            continue
+        if source_traits.block_type == "plant" and candidate_traits.block_type == "solid":
+            continue
         if not _family_compatible(source_traits.family, candidate_traits.family):
             continue
         if not _special_plant_compatible(source_name, candidate_base):
@@ -351,6 +438,14 @@ def _pick_relaxed_safe_match(
         candidate_clean = _as_key(candidate_base)
         source_clean = _as_key(source_name)
         if source_traits.shape == "full" and (candidate_clean in SMALL_MODEL_BLOCKS or _is_small_model(candidate_traits)) and source_clean not in SMALL_MODEL_BLOCKS and not _is_small_model(source_traits):
+            continue
+        if (
+            source_traits.shape == "full"
+            and source_traits.family in {"stone", "deepslate", "blackstone", "brick", "ore", "dirt", "amethyst"}
+            and candidate_traits.family in {"log", "planks"}
+        ):
+            continue
+        if "bamboo_block" in source_clean and candidate_clean == "bamboo":
             continue
         if source_traits.shape != candidate_traits.shape:
             continue
@@ -366,6 +461,8 @@ def _pick_relaxed_safe_match(
         cand_color = _resolve_color(candidate_base, gradient_map)
         if src_color and cand_color:
             score += max(-5.0, 4.0 - (_color_distance(src_color, cand_color) / 35.0))
+
+        score += _color_token_penalty(source_name, candidate_base)
 
         if best is None or score > best[0]:
             best = (score, candidate_base)
@@ -406,6 +503,11 @@ def pick_best_match(
     # CRITICAL: Check if block exists in target version
     if _block_exists_in_target(source_name, target_blocks):
         return MatchResult(source=source_name, target=source_name, reason="exists_in_target_1.16.5", confidence=1.0)
+
+    # Special handling for colorless/foliage-like blocks.
+    manual_match = _manual_override_match(source_name, target_blocks)
+    if manual_match:
+        return MatchResult(source=source_name, target=manual_match, reason="manual_exact_mapping", confidence=0.97)
 
     # Special handling for colorless/foliage-like blocks.
     colorless_replacement = _get_colorless_replacement(source_name)
