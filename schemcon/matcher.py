@@ -97,6 +97,9 @@ DISCOURAGED_UTILITY_TOKENS = {
     "hopper",
     "brewing_stand",
     "cauldron",
+    "anvil",
+    "lantern",
+    "redstone_lamp",
 }
 
 WOOD_FALLBACK_ORDER = [

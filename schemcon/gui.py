@@ -45,6 +45,7 @@ class SchemconApp(ttk.Frame):
         self._pending_output_schem = ""
         self._pending_input_schem = ""
         self._current_gradient_map: dict[str, tuple[int, int, int]] = {}
+        self._stairs_to_block_fallback_var = tk.BooleanVar(value=True)
 
         self._jar_member_index: dict[str, set[str]] = {}
         self._photo_refs: dict[str, tk.PhotoImage] = {}
@@ -128,19 +129,25 @@ class SchemconApp(ttk.Frame):
         self.fawe_name_var = tk.StringVar(value="converted")
         ttk.Entry(form, textvariable=self.fawe_name_var).grid(row=3, column=1, sticky="ew", padx=8, pady=6)
 
+        ttk.Checkbutton(
+            form,
+            text="Замена ступенек на блок при плохом совпадении цвета (>50%)",
+            variable=self._stairs_to_block_fallback_var,
+        ).grid(row=4, column=0, columnspan=3, sticky="w", padx=8, pady=(2, 6))
+
         ttk.Button(
             form,
             text="1) Построить mapping (только реальные замены)",
             style="Primary.TButton",
             command=self._run_auto,
-        ).grid(row=4, column=0, columnspan=3, sticky="ew", padx=8, pady=(10, 6))
+        ).grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(8, 6))
 
         ttk.Button(
             form,
             text="2) Подтвердить mapping и конвертировать",
             style="Primary.TButton",
             command=self._apply_mapping,
-        ).grid(row=5, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
 
         preview = ttk.LabelFrame(self, text="Лог mapping (группы блоков, сворачиваемые)")
         preview.grid(row=3, column=0, sticky="nsew", padx=12, pady=6)
@@ -279,6 +286,43 @@ class SchemconApp(ttk.Frame):
         tr = categorize_block(block_name)
         return f"{tr.category}/{tr.shape}"
 
+    def _color_mismatch_ratio(self, left: tuple[int, int, int], right: tuple[int, int, int]) -> float:
+        dr = left[0] - right[0]
+        dg = left[1] - right[1]
+        db = left[2] - right[2]
+        dist = (dr * dr + dg * dg + db * db) ** 0.5
+        return dist / 441.6729559300637  # sqrt(255^2 * 3)
+
+    def _fallback_block_for_stair(self, source_block: str, target_blocks: set[str]) -> str | None:
+        src_color = self._block_color(source_block)
+        src_traits = categorize_block(source_block)
+
+        best: tuple[float, str] | None = None
+        for candidate in sorted(target_blocks):
+            cand_base = self._normalize_block(candidate)
+            cand_traits = categorize_block(cand_base)
+
+            # Replace stair only with full solid-looking blocks.
+            if cand_traits.shape != "full":
+                continue
+            if cand_traits.block_type != "solid":
+                continue
+
+            score = 0.0
+            if cand_traits.family in {"concrete", "wool", "planks", "stone", "deepslate", "blackstone", "brick"}:
+                score += 2.0
+            if cand_traits.family == src_traits.family:
+                score += 1.5
+
+            cand_color = self._block_color(cand_base)
+            ratio = self._color_mismatch_ratio(src_color, cand_color)
+            score -= ratio * 10.0
+
+            if best is None or score > best[0]:
+                best = (score, cand_base)
+
+        return best[1] if best else None
+
     def _run_auto(self) -> None:
         try:
             source_version = self.source_version_var.get().strip()
@@ -344,6 +388,21 @@ class SchemconApp(ttk.Frame):
                     base_res = pick_best_match(base_block, target_blocks, gradient_map=self._current_gradient_map)
                     if base_res.target != "minecraft:air":
                         res = base_res
+
+                if self._stairs_to_block_fallback_var.get():
+                    src_traits = categorize_block(block)
+                    tgt_traits = categorize_block(res.target)
+                    if src_traits.shape == "stairs" and tgt_traits.shape == "stairs":
+                        mismatch = self._color_mismatch_ratio(self._block_color(block), self._block_color(res.target))
+                        if mismatch > 0.5:
+                            block_fallback = self._fallback_block_for_stair(block, target_blocks)
+                            if block_fallback:
+                                res = type(res)(
+                                    source=res.source,
+                                    target=block_fallback,
+                                    reason=f"stairs_color_to_block({mismatch:.2f})",
+                                    confidence=max(0.55, res.confidence - 0.2),
+                                )
                 mapping[block] = {"target": res.target, "reason": res.reason}
 
             mapping_path.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
