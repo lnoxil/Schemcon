@@ -197,11 +197,11 @@ def _resolve_target(name: str, mapping: dict[str, str], allowed_targets: set[str
         mapped_name, mapped_props = _split_blockstate(mapped_base)
         if mapped_props:
             return _sanitize_mapped_target(mapped_base, allowed_targets)
-        # FAWE can return null block states when legacy/newer properties are kept on
-        # a base-only mapping (e.g. old property names that no longer exist). If the
-        # mapping does not explicitly define a full blockstate, always emit only the
-        # target base block id.
-        return _sanitize_mapped_target(_as_base_blockstate(mapped_name), allowed_targets)
+        # If mapping only specifies target base id, preserve important geometric
+        # properties from source (stairs/slabs/doors/...)
+        # to avoid rotated/wrong-shape replacements after downgrade.
+        with_props = _apply_source_properties(name, _as_base_blockstate(mapped_name))
+        return _sanitize_mapped_target(with_props, allowed_targets)
     
     # Fallback: try to find similar block in allowed_targets
     if allowed_targets:

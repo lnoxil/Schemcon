@@ -10,7 +10,12 @@ from tkinter import filedialog, messagebox, ttk
 
 from .categories import categorize_block
 from .convert import convert_schematic
-from .gradient import build_gradient_map, load_gradient_map, save_gradient_map
+from .gradient import (
+    build_gradient_map,
+    load_gradient_map,
+    refresh_gradient_maps_for_local_versions,
+    save_gradient_map,
+)
 from .schem import export_fawe_compatible, load_schematic
 from .matcher import pick_best_match
 from .registry import (
@@ -200,6 +205,18 @@ class SchemconApp(ttk.Frame):
             manifest = fetch_version_manifest()
             self._prepare_version_registry(source_version, manifest, version_root)
             self._prepare_version_registry(target_version, manifest, version_root)
+
+            # Keep gradient maps synchronized for all locally available versions.
+            # This makes downgrade rules update automatically when a new version is added.
+            gradient_stats = refresh_gradient_maps_for_local_versions(
+                version_root,
+                pathlib.Path("data/gradients"),
+            )
+            if gradient_stats:
+                self._log(
+                    "Градиент-карты обновлены: "
+                    + ", ".join(f"{ver}={count}" for ver, count in sorted(gradient_stats.items()))
+                )
 
             source_registry = load_registry(version_root / source_version)
             target_registry = load_registry(version_root / target_version)

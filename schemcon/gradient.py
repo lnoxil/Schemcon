@@ -142,6 +142,58 @@ def build_gradient_map(client_jar: pathlib.Path, block_names: set[str]) -> dict[
     return result
 
 
+
+
+def list_local_versions(versions_root: pathlib.Path) -> list[str]:
+    versions: list[str] = []
+    if not versions_root.exists():
+        return versions
+
+    for child in sorted(versions_root.iterdir()):
+        if not child.is_dir():
+            continue
+        blocks = child / "blocks.json"
+        client = child / f"{child.name}.client.jar"
+        if blocks.exists() and client.exists():
+            versions.append(child.name)
+    return versions
+
+
+def refresh_gradient_maps_for_local_versions(
+    versions_root: pathlib.Path,
+    gradients_dir: pathlib.Path,
+) -> dict[str, int]:
+    """Build/refresh gradient maps for all local versions that have client jars.
+
+    Returns mapping version -> number of blocks with sampled texture color.
+    """
+    stats: dict[str, int] = {}
+    for version in list_local_versions(versions_root):
+        version_dir = versions_root / version
+        blocks_path = version_dir / "blocks.json"
+        client_jar = version_dir / f"{version}.client.jar"
+        if not blocks_path.exists() or not client_jar.exists():
+            continue
+
+        try:
+            payload = json.loads(blocks_path.read_text(encoding="utf-8"))
+            block_data = payload.get("blocks") if isinstance(payload, dict) else payload
+            if isinstance(block_data, dict):
+                block_names = set(block_data.keys())
+            else:
+                block_names = set()
+        except Exception:
+            block_names = set()
+
+        if not block_names:
+            continue
+
+        gradient_map = build_gradient_map(client_jar, block_names)
+        save_gradient_map(gradients_dir / f"{version}.json", gradient_map)
+        stats[version] = len(gradient_map)
+
+    return stats
+
 def save_gradient_map(path: pathlib.Path, gradient_map: dict[str, tuple[int, int, int]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {k: list(v) for k, v in gradient_map.items()}
