@@ -215,7 +215,7 @@ class SchemconApp(ttk.Frame):
             self._log(f"Mapping сохранён: {mapping_path}")
 
             flat_mapping = {k: v["target"] for k, v in mapping.items()}
-            report = convert_schematic(input_schem, output_schem, flat_mapping)
+            report = convert_schematic(input_schem, output_schem, flat_mapping, allowed_targets=target_blocks)
             report_path = pathlib.Path(output_schem).with_suffix(".report.json")
             report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
             self._log(f"Схема конвертирована: {output_schem}")
