@@ -25,8 +25,6 @@ SAFE_COLLISION_STATES = (
     "minecraft:andesite",
     "minecraft:diorite",
     "minecraft:granite",
-    "minecraft:deepslate",
-    "minecraft:calcite",
     "minecraft:smooth_stone",
     "minecraft:terracotta",
     "minecraft:white_wool",
