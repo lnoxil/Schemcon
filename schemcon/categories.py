@@ -132,6 +132,8 @@ BLOCK_CATEGORIES = {
     "potted": "potted_plant",
     "flower_pot": "potted_plant",
     "decorated_pot": "pot_block",
+    "banner": "banner",
+    "wall_banner": "banner",
     "command_block": "command_block",
     "chain_command_block": "command_block",
     "repeating_command_block": "command_block",
@@ -168,6 +170,9 @@ BLOCK_PROPERTIES = {
         "mushroom_small",
         "potted_plant",
     },
+    "banner": {
+        "banner",
+    },
     "liquid": {
         "liquid_water",
         "liquid_lava",
@@ -195,21 +200,30 @@ def _detect_color(name: str) -> tuple[int, int, int] | None:
 
 
 def _normalize_name(name: str) -> str:
-    if ":" in name:
-        return name.split(":", 1)[1]
-    return name
+    base = name.split("[", 1)[0]
+    if ":" in base:
+        return base.split(":", 1)[1]
+    return base
+
+
+def _matches_rule(needle: str, tokens: set[str], name: str) -> bool:
+    # compound needles (like fence_gate) should match in full name
+    if "_" in needle:
+        return needle in name
+    # short words must match full token (avoid waterlogged -> log/wall)
+    return needle in tokens
 
 
 def _detect_shape(tokens: set[str], name: str) -> str:
     for needle, shape in SHAPE_RULES.items():
-        if needle in name or needle in tokens:
+        if _matches_rule(needle, tokens, name):
             return shape
     return "full"
 
 
 def _detect_family(tokens: set[str], name: str) -> str:
     for needle, family in FAMILY_RULES.items():
-        if needle in name or needle in tokens:
+        if _matches_rule(needle, tokens, name):
             return family
     return "generic"
 
