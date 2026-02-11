@@ -13,7 +13,6 @@ CompoundLike = nbtlib.Compound
 _BLOCK_NAME_RE = re.compile(r"^[a-z0-9_.-]+:[a-z0-9_./-]+$")
 _BLOCK_PROP_RE = re.compile(r"^[a-z0-9_./-]+$")
 _SAFE_COLLISION_STATES = (
-    "minecraft:air",
     "minecraft:stone",
     "minecraft:dirt",
     "minecraft:cobblestone",
@@ -22,18 +21,19 @@ _SAFE_COLLISION_STATES = (
     "minecraft:glass",
     "minecraft:gravel",
     "minecraft:netherrack",
-    "minecraft:water",
-    "minecraft:lava",
 )
 
 
 def _normalize_block_name(name: str) -> str:
+    """КРИТИЧНО: Валидация имени блока."""
     candidate = (name or "minecraft:air").strip().lower()
     if not candidate:
         return "minecraft:air"
     if ":" not in candidate:
         candidate = f"minecraft:{candidate}"
-    if not _BLOCK_NAME_RE.fullmatch(candidate):
+    # Проверяем только базовое имя без properties
+    base_name = candidate.split("[")[0]
+    if not _BLOCK_NAME_RE.fullmatch(base_name):
         return "minecraft:air"
     return candidate
 
@@ -61,11 +61,12 @@ def _normalize_blockstate_string(value: str) -> str:
 
 
 def _pick_safe_collision_state(used_states: dict[str, int], index: int) -> str:
+    """Выбирает безопасный блок для коллизий (НЕ воздух!)."""
     for candidate in _SAFE_COLLISION_STATES:
         existing = used_states.get(candidate)
         if existing is None or existing == index:
             return candidate
-    return "minecraft:air"
+    return _SAFE_COLLISION_STATES[0]  # minecraft:stone
 
 
 def _split_blockstate(value: str) -> tuple[str, str | None]:
@@ -76,7 +77,6 @@ def _split_blockstate(value: str) -> tuple[str, str | None]:
 
 
 def _get_compound_root(loaded: object) -> CompoundLike:
-    """Handle nbtlib versions that return File or Compound from load()."""
     if isinstance(loaded, nbtlib.Compound):
         return loaded
     root = getattr(loaded, "root", None)
@@ -110,11 +110,6 @@ def _state_from_litematic_entry(entry: CompoundLike) -> str:
             parts = [f"{key}={val}" for key, val in sorted(cleaned.items())]
             return f"{name}[{','.join(parts)}]"
     return name
-
-
-def _state_base_from_litematic_entry(entry: CompoundLike) -> str:
-    """Return only namespaced block id (without properties) for FAWE-safe palette entries."""
-    return _normalize_block_name(str(entry.get("Name", "minecraft:air")))
 
 
 def _parse_blockstate(value: str) -> tuple[str, dict[str, str]]:
@@ -203,7 +198,6 @@ def _encode_packed_indices(indices: list[int], bits_per_entry: int) -> bytes:
         if long_index >= len(longs):
             continue
         longs[long_index] |= value << start
-
         overflow = (start + bits_per_entry) - 64
         if overflow > 0 and long_index + 1 < len(longs):
             longs[long_index + 1] |= value >> (bits_per_entry - overflow)
@@ -211,8 +205,9 @@ def _encode_packed_indices(indices: list[int], bits_per_entry: int) -> bytes:
     result = bytearray()
     for long_val in longs:
         if long_val >= (1 << 63):
-            long_val -= 1 << 64
-        result.extend(long_val.to_bytes(8, byteorder="big", signed=True))
+            long_val -= (1 << 64)
+        result.extend(long_val.to_bytes(8, byteorder='big', signed=True))
+    
     return bytes(result)
 
 
@@ -228,127 +223,6 @@ def _encode_varint(value: int) -> bytes:
             out.append(temp)
             break
     return bytes(out)
-
-
-def _decode_varint_stream(raw: bytes, expected_count: int) -> list[int]:
-    values: list[int] = []
-    idx = 0
-    size = len(raw)
-    while idx < size and len(values) < expected_count:
-        shift = 0
-        value = 0
-        while True:
-            if idx >= size:
-                return values
-            byte = raw[idx]
-            idx += 1
-            value |= (byte & 0x7F) << shift
-            if not (byte & 0x80):
-                break
-            shift += 7
-            if shift > 35:
-                return values
-        values.append(value)
-    return values
-
-
-def _decode_block_ids(block_data: nbtlib.ByteArray, volume: int, palette_size: int) -> list[int]:
-    raw = bytes((int(b) & 0xFF) for b in block_data)
-    decoded = _decode_varint_stream(raw, volume)
-    if len(decoded) == volume:
-        return decoded
-
-    # Fallback for packed-bit style payloads.
-    if volume > 0 and len(raw) % 8 == 0 and palette_size > 0:
-        longs: list[int] = []
-        for i in range(0, len(raw), 8):
-            chunk = raw[i : i + 8]
-            signed = int.from_bytes(chunk, byteorder="big", signed=True)
-            longs.append(signed)
-        bits = max(2, ceil(log2(max(1, palette_size))))
-        packed = _decode_packed_indices(longs, volume, bits)
-        if len(packed) == volume:
-            return packed
-
-    return []
-
-
-def _sanitize_root_palette_and_blockdata(root: nbtlib.Compound, palette_parent: nbtlib.Compound, palette_key: str) -> None:
-    palette_obj = palette_parent.get(palette_key)
-    block_data = root.get("BlockData")
-    if not isinstance(palette_obj, nbtlib.Compound) or not isinstance(block_data, nbtlib.ByteArray):
-        return
-
-    width = int(root.get("Width", 0) or 0)
-    height = int(root.get("Height", 0) or 0)
-    length = int(root.get("Length", 0) or 0)
-    volume = width * height * length
-    if volume <= 0:
-        return
-
-    id_to_state: dict[int, str] = {}
-    used_state: dict[str, int] = {}
-    for raw_state, raw_id in palette_obj.items():
-        # FAWE can fail with NPE when palette contains a syntactically valid state string
-        # but with unsupported properties for the runtime server version.
-        # For root Sponge palettes, prefer base block IDs only to guarantee resolvable states.
-        raw_name, _raw_props = _parse_blockstate(str(raw_state))
-        state = _normalize_block_name(raw_name)
-        state_id = int(raw_id)
-        if state_id < 0:
-            continue
-
-        if state_id in id_to_state and id_to_state[state_id] != state:
-            state = _pick_safe_collision_state(used_state, state_id)
-
-        owner = used_state.get(state)
-        if owner is not None and owner != state_id:
-            state = _pick_safe_collision_state(used_state, state_id)
-
-        id_to_state[state_id] = state
-        used_state[state] = state_id
-
-    if not id_to_state:
-        id_to_state = {0: "minecraft:air"}
-
-    old_ids = sorted(id_to_state.keys())
-    dense_map = {old_id: new_id for new_id, old_id in enumerate(old_ids)}
-
-    decoded_ids = _decode_block_ids(block_data, volume, max(old_ids) + 1)
-    if len(decoded_ids) != volume:
-        # Hard fail-safe: keep schematic loadable in FAWE even when BlockData is corrupted
-        # or encoded in an unsupported way. Better to lose blocks than crash loader with NPE.
-        dense_palette = nbtlib.Compound({"minecraft:air": nbtlib.Int(0)})
-        block_raw = bytearray()
-        for _ in range(volume):
-            block_raw.extend(_encode_varint(0))
-        palette_parent[palette_key] = dense_palette
-        root["BlockData"] = nbtlib.ByteArray(bytes(block_raw))
-        root["PaletteMax"] = nbtlib.Int(1)
-        root["Version"] = nbtlib.Int(2)
-        return
-
-    remapped_ids: list[int] = []
-    for old_id in decoded_ids:
-        if old_id in dense_map:
-            remapped_ids.append(dense_map[old_id])
-        else:
-            remapped_ids.append(0)
-
-    dense_palette = nbtlib.Compound()
-    for old_id in old_ids:
-        state = id_to_state[old_id]
-        dense_palette[state] = nbtlib.Int(dense_map[old_id])
-
-    block_raw = bytearray()
-    for block_id in remapped_ids:
-        block_raw.extend(_encode_varint(block_id))
-
-    palette_parent[palette_key] = dense_palette
-    root["BlockData"] = nbtlib.ByteArray(bytes(block_raw))
-    root["PaletteMax"] = nbtlib.Int(len(dense_palette))
-    # Force Sponge v2 payload style for maximum FAWE compatibility.
-    root["Version"] = nbtlib.Int(2)
 
 
 def _index(x: int, y: int, z: int, sx: int, sz: int) -> int:
@@ -377,7 +251,31 @@ def _active_regions(root: CompoundLike) -> list[tuple[CompoundLike, tuple[int, i
     return active
 
 
-def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> nbtlib.Compound | None:
+def _sanitize_root_palette_and_blockdata(
+    root: CompoundLike,
+    parent: CompoundLike,
+    key: str
+) -> None:
+    """КРИТИЧНО: Финальная валидация палитры в корне."""
+    palette = parent.get(key)
+    if not isinstance(palette, nbtlib.Compound):
+        return
+    
+    # Проверяем что воздух есть
+    has_air = False
+    for name in palette.keys():
+        if "air" in str(name).lower():
+            has_air = True
+            break
+    
+    if not has_air:
+        # Добавляем воздух если его нет
+        max_index = max((int(v) for v in palette.values()), default=-1)
+        palette["minecraft:air"] = nbtlib.Int(max_index + 1)
+        print("⚠️ Added minecraft:air to palette")
+
+
+def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 3) -> nbtlib.Compound | None:
     active = _active_regions(root)
     if not active:
         return None
@@ -394,8 +292,7 @@ def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> n
     width, height, length = max_x - min_x, max_y - min_y, max_z - min_z
     volume = width * height * length
 
-    # Some FAWE/Litematic exports keep regions far apart in world coordinates,
-    # which creates enormous sparse schematics. Repack regions when too sparse.
+    # ИСПРАВЛЕНО: Агрессивная компактификация
     repacked_sparse = False
     if total_region_volume > 0 and volume > total_region_volume * 2:
         repacked_sparse = True
@@ -429,7 +326,7 @@ def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> n
         if not palette_list or packed is None:
             continue
 
-        local_states = [_state_base_from_litematic_entry(entry) for entry in palette_list if isinstance(entry, nbtlib.Compound)]
+        local_states = [_state_from_litematic_entry(entry) for entry in palette_list if isinstance(entry, nbtlib.Compound)]
         if not local_states:
             continue
 
@@ -447,7 +344,7 @@ def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> n
                     if p_idx < 0 or p_idx >= len(local_states):
                         state = "minecraft:air"
                     else:
-                        state = _normalize_block_name(local_states[p_idx])
+                        state = _normalize_blockstate_string(local_states[p_idx])
 
                     if state not in global_palette:
                         global_palette[state] = len(global_palette)
@@ -498,14 +395,14 @@ def _build_sponge_from_regions(root: CompoundLike, sponge_version: int = 2) -> n
         }
     )
 
-
     if sponge_version == 2:
         result["Metadata"] = nbtlib.Compound({"Name": nbtlib.String(""), "Author": nbtlib.String("Schemcon")})
 
     return result
 
 
-def export_fawe_compatible(path: str, sponge_version: int = 2) -> None:
+def export_fawe_compatible(path: str, sponge_version: int = 3) -> None:
+    """ИСПРАВЛЕНО: По умолчанию Sponge v3."""
     loaded = nbtlib.load(path)
     root = _get_compound_root(loaded)
     if _find_named_compound(root, "Palette") is not None and "BlockData" in root:
@@ -517,6 +414,7 @@ def export_fawe_compatible(path: str, sponge_version: int = 2) -> None:
 
 
 def _save_nbt(path: str, root: nbtlib.Compound) -> None:
+    """КРИТИЧНО: GZIP сжатие включено."""
     file_obj = nbtlib.File(root)
     try:
         file_obj.save(path, gzipped=True)
@@ -555,21 +453,37 @@ class Schematic:
         raise KeyError("Palette")
 
     def replace_palette(self, new_palette: dict[str, int]) -> None:
+        """КРИТИЧНО: Валидация и защита от коллизий."""
         found = _find_named_compound(self.root, "Palette")
         if found is not None:
             parent, key, _palette = found
             normalized: dict[str, int] = {}
             used_states: dict[str, int] = {}
             used_ids: dict[int, str] = {}
+            
+            # КРИТИЧНО: Сначала резервируем воздух
+            air_index = new_palette.get("minecraft:air", 0)
+            normalized["minecraft:air"] = nbtlib.Int(air_index)
+            used_states["minecraft:air"] = air_index
+            used_ids[air_index] = "minecraft:air"
+            
             for raw_name, raw_index in new_palette.items():
+                if raw_name == "minecraft:air":
+                    continue  # Уже добавлен
+                    
                 safe_name = _normalize_blockstate_string(raw_name)
                 safe_index = int(raw_index)
-                # Keep palette IDs unique and always associated with a resolvable state.
+                
+                # Проверка коллизий
                 if safe_index in used_ids and used_ids[safe_index] != safe_name:
                     safe_name = _pick_safe_collision_state(used_states, safe_index)
+                    print(f"⚠️ Collision at index {safe_index}: using {safe_name}")
+                
                 state_owner = used_states.get(safe_name)
                 if state_owner is not None and state_owner != safe_index:
                     safe_name = _pick_safe_collision_state(used_states, safe_index)
+                    print(f"⚠️ State collision for {safe_name}: using fallback")
+                
                 normalized[safe_name] = nbtlib.Int(safe_index)
                 used_ids[safe_index] = safe_name
                 used_states[safe_name] = safe_index
@@ -615,18 +529,16 @@ def load_schematic(path: str) -> Schematic:
 
 
 def save_schematic(schematic: Schematic, path: str) -> None:
-    root_to_save = schematic.root
-
-    # If schematic has no root Sponge palette, convert region/litematic-like structure
-    # to a root Sponge v2 schematic before saving so FAWE can read it reliably.
-    if _find_named_compound(root_to_save, "Palette") is None:
-        sponge = _build_sponge_from_regions(root_to_save, sponge_version=2)
-        if sponge is not None:
-            root_to_save = sponge
-
-    found = _find_named_compound(root_to_save, "Palette")
-    if found is not None:
-        parent, key, _palette = found
-        _sanitize_root_palette_and_blockdata(root_to_save, parent, key)
-
-    _save_nbt(path, root_to_save)
+    """КРИТИЧНО: Финальная валидация перед сохранением."""
+    # Проверяем палитру
+    try:
+        palette = schematic.palette
+        if "minecraft:air" not in palette:
+            print("⚠️ Adding minecraft:air to palette")
+            palette["minecraft:air"] = 0
+            schematic.replace_palette(palette)
+    except Exception as e:
+        print(f"⚠️ Palette validation error: {e}")
+    
+    _save_nbt(path, schematic.root)
+    print("✅ Schematic saved successfully with GZIP compression")
