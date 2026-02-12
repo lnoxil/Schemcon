@@ -53,6 +53,7 @@ class SchemconApp(ttk.Frame):
         self._block_icon_cache: dict[str, tk.PhotoImage] = {}
         self._pair_icon_cache: dict[str, tk.PhotoImage] = {}
         self._group_children: dict[str, list[dict[str, str]]] = {}
+        self._multi_target_versions: set[str] = set()
 
         self._build_style()
         self._build_layout()
@@ -137,11 +138,25 @@ class SchemconApp(ttk.Frame):
             row=1, column=2, padx=8, pady=6
         )
 
+        ttk.Button(
+            versions_panel,
+            text="Выбрать версии для batch (галочки)",
+            command=self._open_multi_target_dialog,
+            style="Secondary.TButton",
+        ).grid(row=2, column=2, padx=8, pady=6)
+
+        self.multi_targets_var = tk.StringVar(value="Batch-версии: не выбраны")
+        ttk.Label(
+            versions_panel,
+            textvariable=self.multi_targets_var,
+            foreground="#4f5d75",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=6)
+
         ttk.Label(
             versions_panel,
             text="Совет: сначала загрузите нужные версии, затем стройте mapping.",
             foreground="#4f5d75",
-        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 6))
+        ).grid(row=3, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 6))
 
         form = ttk.LabelFrame(self, text="Параметры конвертации", style="Panel.TLabelframe")
         form.grid(row=2, column=0, sticky="ew", padx=12, pady=6)
@@ -197,7 +212,14 @@ class SchemconApp(ttk.Frame):
             text="2) Подтвердить mapping и конвертировать",
             style="Primary.TButton",
             command=self._apply_mapping,
-        ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        ).grid(row=6, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 6))
+
+        ttk.Button(
+            form,
+            text="3) Batch: автоконвертация в отмеченные версии",
+            style="Secondary.TButton",
+            command=self._batch_convert_selected_versions,
+        ).grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
 
         preview = ttk.LabelFrame(self, text="Лог mapping (группы блоков, сворачиваемые)", style="Panel.TLabelframe")
         preview.grid(row=3, column=0, sticky="nsew", padx=12, pady=6)
@@ -266,7 +288,80 @@ class SchemconApp(ttk.Frame):
             self.source_version_var.set(values[0])
         if self.target_version_var.get() not in values:
             self.target_version_var.set("1.16.5" if "1.16.5" in values else (values[-1] if values else ""))
+        self._multi_target_versions = {v for v in self._multi_target_versions if v in values}
+        self._update_multi_target_label()
         self._log(f"Доступные версии: {', '.join(values[:12])}{' ...' if len(values) > 12 else ''}")
+
+    def _update_multi_target_label(self) -> None:
+        if not hasattr(self, "multi_targets_var"):
+            return
+        if not self._multi_target_versions:
+            self.multi_targets_var.set("Batch-версии: не выбраны")
+            return
+        versions = sorted(self._multi_target_versions, key=lambda v: tuple(int(p) if p.isdigit() else p for p in v.split('.')), reverse=True)
+        preview = ", ".join(versions[:4])
+        suffix = f" +{len(versions) - 4}" if len(versions) > 4 else ""
+        self.multi_targets_var.set(f"Batch-версии ({len(versions)}): {preview}{suffix}")
+
+    def _open_multi_target_dialog(self) -> None:
+        values = list(self.source_combo["values"])
+        if not values:
+            messagebox.showwarning("Нет версий", "Сначала обновите/загрузите список версий.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Выбор batch-версий")
+        win.transient(self.winfo_toplevel())
+        win.grab_set()
+        win.geometry("340x460")
+
+        ttk.Label(win, text="Отметьте версии, в которые нужно сразу конвертировать:").pack(anchor="w", padx=12, pady=(12, 8))
+
+        container = ttk.Frame(win)
+        container.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        canvas = tk.Canvas(container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        inner = ttk.Frame(canvas)
+
+        inner.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        vars_by_version: dict[str, tk.BooleanVar] = {}
+        source_version = self.source_version_var.get().strip()
+        for ver in values:
+            var = tk.BooleanVar(value=ver in self._multi_target_versions)
+            vars_by_version[ver] = var
+            state = "disabled" if ver == source_version else "normal"
+            cb = tk.Checkbutton(inner, text=ver, variable=var, anchor="w", justify="left", state=state)
+            if ver == source_version:
+                cb.configure(disabledforeground="#888888")
+            cb.pack(fill="x", anchor="w", padx=2, pady=2)
+
+        btns = ttk.Frame(win)
+        btns.pack(fill="x", padx=12, pady=(0, 12))
+
+        def _select_all() -> None:
+            for ver, var in vars_by_version.items():
+                if ver != source_version:
+                    var.set(True)
+
+        def _clear_all() -> None:
+            for var in vars_by_version.values():
+                var.set(False)
+
+        def _save() -> None:
+            selected = {ver for ver, var in vars_by_version.items() if var.get() and ver != source_version}
+            self._multi_target_versions = selected
+            self._update_multi_target_label()
+            self._log(f"Batch-версии обновлены: {', '.join(sorted(selected)) if selected else 'не выбраны'}")
+            win.destroy()
+
+        ttk.Button(btns, text="Выбрать все", command=_select_all).pack(side="left")
+        ttk.Button(btns, text="Снять всё", command=_clear_all).pack(side="left", padx=(8, 0))
+        ttk.Button(btns, text="Сохранить", command=_save).pack(side="right")
 
     def _download_selected_versions(self) -> None:
         try:
@@ -408,6 +503,115 @@ class SchemconApp(ttk.Frame):
 
         return best[1] if best else None
 
+    def _build_auto_mapping(self, palette_blocks: set[str], target_blocks: set[str]) -> dict[str, dict[str, str]]:
+        mapping: dict[str, dict[str, str]] = {}
+        for block in sorted(palette_blocks):
+            base_block = self._normalize_block(block)
+            base_bare = base_block.replace("minecraft:", "")
+            if base_block in target_blocks or base_bare in target_blocks:
+                mapping[block] = {"target": block, "reason": "exists_in_target"}
+                continue
+
+            res = pick_best_match(block, target_blocks, gradient_map=self._current_gradient_map)
+            if res.target == "minecraft:air" and "[" in block:
+                base_res = pick_best_match(base_block, target_blocks, gradient_map=self._current_gradient_map)
+                if base_res.target != "minecraft:air":
+                    res = base_res
+
+            if self._stairs_to_block_fallback_var.get():
+                src_traits = categorize_block(block)
+                tgt_traits = categorize_block(res.target)
+                if src_traits.shape == "stairs" and tgt_traits.shape == "stairs":
+                    mismatch = self._stairs_mismatch_ratio(block, res.target)
+                    if mismatch > 0.3:
+                        block_fallback = self._fallback_block_for_stair(block, target_blocks)
+                        if block_fallback:
+                            res = type(res)(
+                                source=res.source,
+                                target=block_fallback,
+                                reason=f"stairs_color_to_block({mismatch:.2f})",
+                                confidence=max(0.55, res.confidence - 0.2),
+                            )
+            mapping[block] = {"target": res.target, "reason": res.reason}
+        return mapping
+
+    def _batch_convert_selected_versions(self) -> None:
+        try:
+            source_version = self.source_version_var.get().strip()
+            selected_targets = sorted(v for v in self._multi_target_versions if v != source_version)
+            input_schem = self.input_schem_var.get().strip()
+            output_schem = self.output_schem_var.get().strip()
+            if not source_version:
+                raise ValueError("Выберите исходную версию.")
+            if not selected_targets:
+                raise ValueError("Отметьте хотя бы одну target-версию (кнопка 'Выбрать версии для batch').")
+            if not input_schem or not pathlib.Path(input_schem).exists():
+                raise FileNotFoundError("Укажите существующий входной .schem файл.")
+            if not output_schem:
+                raise ValueError("Укажите базовый путь выходного .schem.")
+
+            self._current_source_version = source_version
+            self._pending_input_schem = input_schem
+
+            manifest = fetch_version_manifest()
+            self._prepare_version_registry(source_version, manifest, self._version_root)
+            for target_version in selected_targets:
+                self._prepare_version_registry(target_version, manifest, self._version_root)
+
+            gradient_stats = refresh_gradient_maps_for_local_versions(
+                self._version_root,
+                pathlib.Path("data/gradients"),
+            )
+            if gradient_stats:
+                self._log(
+                    "Градиент-карты обновлены: "
+                    + ", ".join(f"{ver}={count}" for ver, count in sorted(gradient_stats.items()))
+                )
+
+            source_registry = load_registry(self._version_root / source_version)
+            source_blocks = set(source_registry.keys())
+            input_palette = load_schematic(input_schem).palette
+            palette_blocks = set(input_palette.keys())
+
+            mapping_root = pathlib.Path("data/mappings")
+            mapping_root.mkdir(parents=True, exist_ok=True)
+
+            out_base = pathlib.Path(output_schem)
+            done = 0
+            for target_version in selected_targets:
+                target_registry = load_registry(self._version_root / target_version)
+                target_blocks = set(target_registry.keys())
+
+                self._current_target_version = target_version
+                self._current_target_blocks = target_blocks
+                self._current_gradient_map = self._build_or_load_gradient_map(
+                    source_version,
+                    target_version,
+                    source_blocks,
+                    target_blocks,
+                )
+
+                mapping = self._build_auto_mapping(palette_blocks, target_blocks)
+                mapping_path = mapping_root / f"{source_version}-to-{target_version}.json"
+                mapping_path.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
+
+                output_for_target = out_base.with_name(f"{out_base.stem}_{source_version}_to_{target_version}{out_base.suffix}")
+                flat_mapping = {k: v.get("target", "minecraft:air") for k, v in mapping.items()}
+                report = convert_schematic(input_schem, str(output_for_target), flat_mapping, allowed_targets=target_blocks)
+                report_path = output_for_target.with_suffix(".report.json")
+                report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+                self._log(f"Batch OK: {source_version} -> {target_version}")
+                self._log(f"  mapping: {mapping_path}")
+                self._log(f"  schematic: {output_for_target}")
+                self._log(f"  report: {report_path}")
+                done += 1
+
+            messagebox.showinfo("Batch завершён", f"Успешно сконвертировано версий: {done}")
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Ошибка batch-конвертации: {exc}")
+            messagebox.showerror("Ошибка", str(exc))
+
     def _run_auto(self) -> None:
         try:
             source_version = self.source_version_var.get().strip()
@@ -460,35 +664,7 @@ class SchemconApp(ttk.Frame):
             input_palette = load_schematic(input_schem).palette
             palette_blocks = set(input_palette.keys())
 
-            mapping: dict[str, dict[str, str]] = {}
-            for block in sorted(palette_blocks):
-                base_block = self._normalize_block(block)
-                base_bare = base_block.replace("minecraft:", "")
-                if base_block in target_blocks or base_bare in target_blocks:
-                    mapping[block] = {"target": block, "reason": "exists_in_target"}
-                    continue
-
-                res = pick_best_match(block, target_blocks, gradient_map=self._current_gradient_map)
-                if res.target == "minecraft:air" and "[" in block:
-                    base_res = pick_best_match(base_block, target_blocks, gradient_map=self._current_gradient_map)
-                    if base_res.target != "minecraft:air":
-                        res = base_res
-
-                if self._stairs_to_block_fallback_var.get():
-                    src_traits = categorize_block(block)
-                    tgt_traits = categorize_block(res.target)
-                    if src_traits.shape == "stairs" and tgt_traits.shape == "stairs":
-                        mismatch = self._stairs_mismatch_ratio(block, res.target)
-                        if mismatch > 0.3:
-                            block_fallback = self._fallback_block_for_stair(block, target_blocks)
-                            if block_fallback:
-                                res = type(res)(
-                                    source=res.source,
-                                    target=block_fallback,
-                                    reason=f"stairs_color_to_block({mismatch:.2f})",
-                                    confidence=max(0.55, res.confidence - 0.2),
-                                )
-                mapping[block] = {"target": res.target, "reason": res.reason}
+            mapping = self._build_auto_mapping(palette_blocks, target_blocks)
 
             mapping_path.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
             self._pending_mapping = mapping
