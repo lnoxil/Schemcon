@@ -76,6 +76,12 @@ _ALLOWED_PROPS_BY_SUFFIX = {
     "_wall_sign": {"facing", "waterlogged"},
     "_sign": {"rotation", "waterlogged"},
     "_wall_banner": {"facing"},
+    "_door": {"facing", "half", "hinge", "open", "powered"},
+    "_trapdoor": {"facing", "half", "open", "powered", "waterlogged"},
+    "_fence_gate": {"facing", "open", "in_wall", "powered"},
+    "_fence": {"north", "south", "east", "west", "waterlogged"},
+    "_wall": {"up", "north", "south", "east", "west", "waterlogged"},
+    "_pane": {"north", "south", "east", "west", "waterlogged"},
 }
 
 
@@ -99,8 +105,11 @@ def _canonicalize_blockstate_name(value: str) -> str:
                 allowed = suffix_allowed
                 break
 
+    # If we don't have explicit rules for this block type,
+    # preserve its state instead of dropping potentially valid properties
+    # (e.g. fences, gates, walls, panes and other directional blocks).
     if allowed is None:
-        return canonical_base
+        return f"{canonical_base}[{props}]"
 
     filtered = {k: v for k, v in parsed_props.items() if k in allowed}
 
@@ -402,6 +411,32 @@ def _apply_source_properties(source: str, target: str) -> str:
             result_props["in_wall"] = source_props["in_wall"]
         else:
             result_props["in_wall"] = "false"
+        if "powered" in source_props:
+            result_props["powered"] = source_props["powered"]
+
+    # Fence-specific connection properties
+    elif target_base.endswith("_fence"):
+        for side in ("north", "south", "east", "west"):
+            if side in source_props:
+                result_props[side] = source_props[side]
+        if "waterlogged" in source_props:
+            result_props["waterlogged"] = source_props["waterlogged"]
+
+    # Wall-specific connection properties
+    elif target_base.endswith("_wall"):
+        for key in ("up", "north", "south", "east", "west"):
+            if key in source_props:
+                result_props[key] = source_props[key]
+        if "waterlogged" in source_props:
+            result_props["waterlogged"] = source_props["waterlogged"]
+
+    # Glass pane/iron bars style connection properties
+    elif target_base.endswith("_pane") or target_base.endswith("iron_bars"):
+        for side in ("north", "south", "east", "west"):
+            if side in source_props:
+                result_props[side] = source_props[side]
+        if "waterlogged" in source_props:
+            result_props["waterlogged"] = source_props["waterlogged"]
 
     # Button/pressure plate properties
     elif "button" in target_base or "pressure_plate" in target_base:
@@ -428,7 +463,10 @@ def _apply_source_properties(source: str, target: str) -> str:
 def _resolve_smart_target(name: str, mapping: dict[str, dict], allowed_targets: set[str] | None = None) -> dict:
     direct = mapping.get(name)
     if isinstance(direct, dict):
-        target = _sanitize_mapped_target(str(direct.get("target", "minecraft:air")), allowed_targets)
+        raw_target = str(direct.get("target", "minecraft:air"))
+        target_base, target_props = _split_blockstate(raw_target)
+        target_candidate = raw_target if target_props else _apply_source_properties(name, _as_base_blockstate(target_base))
+        target = _sanitize_mapped_target(target_candidate, allowed_targets)
         return {
             "target": target,
             "reason": direct.get("reason", "direct"),
@@ -442,7 +480,7 @@ def _resolve_smart_target(name: str, mapping: dict[str, dict], allowed_targets: 
         mapped_target = str(mapped_base.get("target", base))
         mapped_name, mapped_props = _split_blockstate(mapped_target)
         if not mapped_props:
-            mapped_target = _as_base_blockstate(mapped_name)
+            mapped_target = _apply_source_properties(name, _as_base_blockstate(mapped_name))
         mapped_target = _sanitize_mapped_target(mapped_target, allowed_targets)
         return {
             "target": mapped_target,
