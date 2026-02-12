@@ -503,6 +503,9 @@ class SchemconApp(ttk.Frame):
 
         return best[1] if best else None
 
+    def _version_token(self, version: str) -> str:
+        return re.sub(r"[^0-9A-Za-z]+", "_", version.strip()).strip("_")
+
     def _build_auto_mapping(self, palette_blocks: set[str], target_blocks: set[str]) -> dict[str, dict[str, str]]:
         mapping: dict[str, dict[str, str]] = {}
         for block in sorted(palette_blocks):
@@ -595,7 +598,9 @@ class SchemconApp(ttk.Frame):
                 mapping_path = mapping_root / f"{source_version}-to-{target_version}.json"
                 mapping_path.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
 
-                output_for_target = out_base.with_name(f"{out_base.stem}_{source_version}_to_{target_version}{out_base.suffix}")
+                src_token = self._version_token(source_version)
+                dst_token = self._version_token(target_version)
+                output_for_target = out_base.with_name(f"{out_base.stem}_{src_token}_to_{dst_token}{out_base.suffix}")
                 flat_mapping = {k: v.get("target", "minecraft:air") for k, v in mapping.items()}
                 report = convert_schematic(input_schem, str(output_for_target), flat_mapping, allowed_targets=target_blocks)
                 report_path = output_for_target.with_suffix(".report.json")
