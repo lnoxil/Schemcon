@@ -321,6 +321,17 @@ def _find_similar_block(source: str, allowed_targets: set[str]) -> str | None:
     return find_best_block_match(source, allowed_targets)
 
 
+def _facing_to_rotation(facing: str) -> str:
+    # Minecraft sign rotation values for cardinal directions.
+    mapping = {
+        "south": "0",
+        "west": "4",
+        "north": "8",
+        "east": "12",
+    }
+    return mapping.get(facing, "8")
+
+
 def _apply_source_properties(source: str, target: str) -> str:
     """Copy relevant properties from source block to target block, with smart defaults."""
     source_base, source_props_str = _split_blockstate(source)
@@ -360,6 +371,38 @@ def _apply_source_properties(source: str, target: str) -> str:
             result_props["type"] = source_props["type"]
         else:
             result_props["type"] = "bottom"
+        if "waterlogged" in source_props:
+            result_props["waterlogged"] = source_props["waterlogged"]
+
+    # Sign-specific properties (important for correct orientation when replacing trapdoors/hatches etc.)
+    elif target_base.endswith("_wall_sign"):
+        if "facing" in source_props:
+            result_props["facing"] = source_props["facing"]
+        elif "rotation" in source_props:
+            try:
+                rot = int(source_props["rotation"]) % 16
+                if rot in {0, 1, 15}:
+                    result_props["facing"] = "south"
+                elif rot in {2, 3, 4, 5}:
+                    result_props["facing"] = "west"
+                elif rot in {6, 7, 8, 9}:
+                    result_props["facing"] = "north"
+                else:
+                    result_props["facing"] = "east"
+            except ValueError:
+                result_props["facing"] = "north"
+        else:
+            result_props["facing"] = "north"
+        if "waterlogged" in source_props:
+            result_props["waterlogged"] = source_props["waterlogged"]
+
+    elif target_base.endswith("_sign"):
+        if "rotation" in source_props:
+            result_props["rotation"] = source_props["rotation"]
+        elif "facing" in source_props:
+            result_props["rotation"] = _facing_to_rotation(source_props["facing"])
+        else:
+            result_props["rotation"] = "8"
         if "waterlogged" in source_props:
             result_props["waterlogged"] = source_props["waterlogged"]
 

@@ -416,6 +416,11 @@ def _should_skip_terracotta_candidate(source_name: str, candidate_name: str) -> 
     return src_family != "terracotta"
 
 
+def _is_fire_block(name: str) -> bool:
+    base = _as_key(name)
+    return base in {"fire", "soul_fire"}
+
+
 def _is_utility_block_name(name: str) -> bool:
     base = _as_key(name)
     return any(token in base for token in DISCOURAGED_UTILITY_TOKENS)
@@ -503,6 +508,8 @@ def _pick_shape_safe_match(
         if _is_iron_trapdoor_candidate_forbidden(source_name, candidate_base):
             continue
         if _is_utility_block_name(candidate_base) and not _is_utility_block_name(source_name):
+            continue
+        if _is_fire_block(candidate_base) and not _is_fire_block(source_name):
             continue
         candidate_traits = categorize_block(candidate_base)
 
@@ -669,6 +676,8 @@ def _pick_relaxed_safe_match(
             continue
         if _is_utility_block_name(candidate_base) and not _is_utility_block_name(source_name):
             continue
+        if _is_fire_block(candidate_base) and not _is_fire_block(source_name):
+            continue
         candidate_traits = categorize_block(candidate_base)
 
         if not _strict_category_compatible(source_name, candidate_base):
@@ -824,6 +833,7 @@ def pick_best_match(
                 src_type == cand_type
                 and _strict_category_compatible(source_name, candidate)
                 and _special_plant_compatible(source_name, candidate)
+                and (not _is_fire_block(candidate) or _is_fire_block(source_name))
             ):
                 src_color = _resolve_color(source_name, gradient_map)
                 cand_color = _resolve_color(candidate, gradient_map)
@@ -870,6 +880,8 @@ def pick_best_match(
             continue
         if _is_utility_block_name(cand) and not _is_utility_block_name(source_name):
             continue
+        if _is_fire_block(cand) and not _is_fire_block(source_name):
+            continue
         if not _strict_category_compatible(source_name, cand):
             continue
         if not is_safe_replacement_strict(source_name, cand):
@@ -900,6 +912,7 @@ def pick_best_match(
             and not _should_skip_terracotta_candidate(source_name, base)
             and not _is_iron_trapdoor_candidate_forbidden(source_name, base)
             and not (_is_utility_block_name(base) and not _is_utility_block_name(source_name))
+            and not (_is_fire_block(base) and not _is_fire_block(source_name))
         ):
             return MatchResult(source=source_name, target=base, reason="last_resort_any_block", confidence=0.25)
 
