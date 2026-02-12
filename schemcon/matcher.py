@@ -153,6 +153,9 @@ SMALL_MODEL_BLOCKS = {
     "scaffolding", "lantern", "soul_lantern",
 }
 
+# If source/candidate families differ, allow override only when color match is very close.
+FAMILY_OVERRIDE_MAX_COLOR_DISTANCE = 95.0
+
 
 def _normalize_block_name(name: str) -> str:
     base = name.split("[", 1)[0]
@@ -524,9 +527,12 @@ def _pick_shape_safe_match(
         if source_traits.block_type == "plant" and candidate_traits.block_type == "solid":
             continue
 
-        # Avoid silly substitutions across incompatible families (e.g. stone->bamboo).
-        if not _family_compatible(source_traits.family, candidate_traits.family):
-            continue
+        cand_color = _resolve_color(candidate_base, gradient_map)
+        family_mismatch = not _family_compatible(source_traits.family, candidate_traits.family)
+        # Usually keep family groups, but allow cross-family replacement when color is clearly better.
+        if family_mismatch:
+            if not (src_color and cand_color and _color_distance(src_color, cand_color) <= FAMILY_OVERRIDE_MAX_COLOR_DISTANCE):
+                continue
 
         if not _special_plant_compatible(source_name, candidate_base):
             continue
@@ -589,11 +595,13 @@ def _pick_shape_safe_match(
             score += 3.0
 
         # Try to keep color tone: use sampled map, fallback to keyword color.
-        cand_color = _resolve_color(candidate_base, gradient_map)
         if src_color and cand_color:
             dist = _color_distance(src_color, cand_color)
             # Strongly penalize large mismatches so blue doesn't become red/brown.
             score += max(-6.0, 6.5 - (dist / 28.0))
+
+        if family_mismatch:
+            score -= 1.5
 
         score += _color_token_penalty(source_name, candidate_base)
 
@@ -676,8 +684,11 @@ def _pick_relaxed_safe_match(
             continue
         if source_traits.block_type == "plant" and candidate_traits.block_type == "solid":
             continue
-        if not _family_compatible(source_traits.family, candidate_traits.family):
-            continue
+        cand_color = _resolve_color(candidate_base, gradient_map)
+        family_mismatch = not _family_compatible(source_traits.family, candidate_traits.family)
+        if family_mismatch:
+            if not (src_color and cand_color and _color_distance(src_color, cand_color) <= FAMILY_OVERRIDE_MAX_COLOR_DISTANCE):
+                continue
         if not _special_plant_compatible(source_name, candidate_base):
             continue
         if _is_wood_like_name(source_name) and not _is_wood_like_name(candidate_base):
@@ -712,9 +723,11 @@ def _pick_relaxed_safe_match(
         if source_traits.category == candidate_traits.category:
             score += 2.5
 
-        cand_color = _resolve_color(candidate_base, gradient_map)
         if src_color and cand_color:
             score += max(-5.0, 4.0 - (_color_distance(src_color, cand_color) / 35.0))
+
+        if family_mismatch:
+            score -= 1.0
 
         score += _color_token_penalty(source_name, candidate_base)
 
@@ -810,15 +823,17 @@ def pick_best_match(
             if (
                 src_type == cand_type
                 and _strict_category_compatible(source_name, candidate)
-                and _family_compatible(src_traits.family, cand_traits.family)
                 and _special_plant_compatible(source_name, candidate)
             ):
                 src_color = _resolve_color(source_name, gradient_map)
                 cand_color = _resolve_color(candidate, gradient_map)
-                if src_color and cand_color and _color_distance(src_color, cand_color) > 110:
-                    pass
-                else:
-                    best_match = candidate
+                family_ok = _family_compatible(src_traits.family, cand_traits.family)
+                color_override_ok = bool(src_color and cand_color and _color_distance(src_color, cand_color) <= FAMILY_OVERRIDE_MAX_COLOR_DISTANCE)
+                if family_ok or color_override_ok:
+                    if src_color and cand_color and _color_distance(src_color, cand_color) > 110:
+                        pass
+                    else:
+                        best_match = candidate
 
     if best_match:
         # Calculate confidence based on category match
