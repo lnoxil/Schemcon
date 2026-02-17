@@ -437,10 +437,13 @@ def export_worldedit_legacy_schematic(path: str) -> None:
     loaded = nbtlib.load(path)
     root = _get_compound_root(loaded)
 
-    # Уже в legacy-обёртке.
-    if "Schematic" in root and isinstance(root.get("Schematic"), nbtlib.Compound):
-        inner = root["Schematic"]
-        if isinstance(inner.get("Blocks"), nbtlib.Compound):
+    # If schematic payload already present at root, just force legacy root name.
+    if int(root.get("Width", 0)) > 0 and int(root.get("Height", 0)) > 0 and int(root.get("Length", 0)) > 0:
+        has_payload = isinstance(root.get("Blocks"), nbtlib.Compound) or (
+            isinstance(root.get("Palette"), nbtlib.Compound) and root.get("BlockData") is not None
+        )
+        if has_payload:
+            _save_named_nbt(path, root, "Schematic")
             return
 
     # Если это litematic/regions — сначала соберём Sponge v2, затем обернём.
@@ -477,13 +480,25 @@ def export_worldedit_legacy_schematic(path: str) -> None:
         }
     )
 
-    legacy_root = nbtlib.Compound({"Schematic": inner})
-    _save_nbt(path, legacy_root)
+    # Legacy loaders on 1.12 usually require ROOT TAG NAME == "Schematic".
+    _save_named_nbt(path, inner, "Schematic")
 
 
 def _save_nbt(path: str, root: nbtlib.Compound) -> None:
     """КРИТИЧНО: GZIP сжатие включено."""
     file_obj = nbtlib.File(root)
+    try:
+        file_obj.save(path, gzipped=True)
+    except TypeError:
+        file_obj.save(path)
+
+
+def _save_named_nbt(path: str, root: nbtlib.Compound, root_name: str) -> None:
+    """Save with explicit root tag name (required by many /schematic loaders)."""
+    try:
+        file_obj = nbtlib.File(root, root_name=root_name)
+    except TypeError:
+        file_obj = nbtlib.File(root)
     try:
         file_obj.save(path, gzipped=True)
     except TypeError:

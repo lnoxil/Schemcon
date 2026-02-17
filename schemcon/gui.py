@@ -433,7 +433,12 @@ class SchemconApp(ttk.Frame):
             self.format_input_var.set(path)
             if not self.format_output_var.get().strip() or self.format_output_var.get() == "converted_output.schematic":
                 src = pathlib.Path(path)
-                self.format_output_var.set(str(src.with_name(f"{src.stem}_legacy.schematic")))
+                safe_stem = self._sanitize_legacy_filename(src.stem)
+                self.format_output_var.set(str(src.with_name(f"{safe_stem}_legacy.schematic")))
+
+    def _sanitize_legacy_filename(self, raw: str) -> str:
+        cleaned = re.sub(r"[^a-zA-Z0-9_\-]", "_", raw).strip("_")
+        return cleaned or "schematic"
 
     def _pick_format_output(self) -> None:
         path = filedialog.asksaveasfilename(defaultextension=".schematic", filetypes=[("Schematic", "*.schematic *.schem")])
