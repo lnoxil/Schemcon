@@ -814,8 +814,8 @@ class SchemconApp(ttk.Frame):
             if fawe_dir:
                 fawe_path = self._copy_to_fawe(output_schem, fawe_dir, fawe_name)
                 cmd_name = fawe_path.stem
-                self._log(f"FAWE файл: {fawe_path}")
-                self._log(f"Команда в игре: //schem load {cmd_name}")
+                self._log(f"FAWE файл (legacy): {fawe_path}")
+                self._log(f"Команда в игре (1.12): //schematic load mcedit {cmd_name}")
 
             messagebox.showinfo("Готово", "Конвертация успешно завершена.")
         except Exception as exc:  # noqa: BLE001
@@ -1064,19 +1064,29 @@ class SchemconApp(ttk.Frame):
             raise FileNotFoundError(f"Папка FAWE не найдена: {target_dir}")
         name = self._normalize_fawe_name(fawe_name or out_path.stem)
 
-        export_fawe_compatible(str(out_path), sponge_version=2)
-        target = target_dir / f"{name}.schem"
-        shutil.copy2(out_path, target)
+        # Legacy file for /schematic (1.12-compatible loaders)
+        legacy_source = out_path.with_name(f"{out_path.stem}.legacy.schematic")
+        shutil.copy2(out_path, legacy_source)
+        export_fawe_compatible(str(legacy_source), sponge_version=2)
+        export_worldedit_legacy_schematic(str(legacy_source))
+        target = target_dir / f"{name}.schematic"
+        shutil.copy2(legacy_source, target)
 
+        # Modern fallback for /schem
         v3_source = out_path.with_name(f"{out_path.stem}.v3.schem")
         shutil.copy2(out_path, v3_source)
         export_fawe_compatible(str(v3_source), sponge_version=3)
         target_v3 = target_dir / f"{name}_v3.schem"
         shutil.copy2(v3_source, target_v3)
-        try:
-            v3_source.unlink()
-        except Exception:
-            pass
+
+        for tmp in (legacy_source, v3_source):
+            try:
+                tmp.unlink()
+            except Exception:
+                pass
+
+        self._log(f"Legacy schematic файл: {target}")
+        self._log(f"Команда в игре (legacy): //schematic load mcedit {target.stem}")
         self._log(f"FAWE fallback v3 файл: {target_v3}")
         self._log(f"Команда в игре (v3): //schem load {target_v3.stem}")
 
