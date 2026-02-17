@@ -323,13 +323,19 @@ def _find_similar_block(source: str, allowed_targets: set[str]) -> str | None:
 
 def _facing_to_rotation(facing: str) -> str:
     # Minecraft sign rotation values for cardinal directions.
+    facing_clean = (facing or "").strip().lower()
     mapping = {
         "south": "0",
         "west": "4",
         "north": "8",
         "east": "12",
     }
-    return mapping.get(facing, "8")
+    if facing_clean in mapping:
+        return mapping[facing_clean]
+    # Some files carry numeric rotation even on non-sign blocks.
+    if facing_clean.isdigit():
+        return str(int(facing_clean) % 16)
+    return "8"
 
 
 def _apply_source_properties(source: str, target: str) -> str:
@@ -381,14 +387,8 @@ def _apply_source_properties(source: str, target: str) -> str:
         elif "rotation" in source_props:
             try:
                 rot = int(source_props["rotation"]) % 16
-                if rot in {0, 1, 15}:
-                    result_props["facing"] = "south"
-                elif rot in {2, 3, 4, 5}:
-                    result_props["facing"] = "west"
-                elif rot in {6, 7, 8, 9}:
-                    result_props["facing"] = "north"
-                else:
-                    result_props["facing"] = "east"
+                nearest = min((0, "south"), (4, "west"), (8, "north"), (12, "east"), key=lambda item: min((rot - item[0]) % 16, (item[0] - rot) % 16))
+                result_props["facing"] = nearest[1]
             except ValueError:
                 result_props["facing"] = "north"
         else:

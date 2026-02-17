@@ -28,7 +28,7 @@ from .registry import (
     load_registry,
     resolve_version_info,
 )
-from .schem import export_fawe_compatible, load_schematic
+from .schem import export_fawe_compatible, load_schematic, save_schematic
 
 
 class SchemconApp(ttk.Frame):
@@ -47,6 +47,9 @@ class SchemconApp(ttk.Frame):
         self._pending_input_schem = ""
         self._current_gradient_map: dict[str, tuple[int, int, int]] = {}
         self._stairs_to_block_fallback_var = tk.BooleanVar(value=True)
+        self.format_input_var = tk.StringVar()
+        self.format_output_var = tk.StringVar(value="converted_output.schematic")
+        self.format_kind_var = tk.StringVar(value="old_schematic_v2")
 
         self._jar_member_index: dict[str, set[str]] = {}
         self._photo_refs: dict[str, tk.PhotoImage] = {}
@@ -221,6 +224,38 @@ class SchemconApp(ttk.Frame):
             command=self._batch_convert_selected_versions,
         ).grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
 
+        ttk.Separator(form, orient="horizontal").grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(2, 6))
+        ttk.Label(form, text="Конвертация формата схемы (.schem -> .schematic для старых версий)", background="#ffffff").grid(
+            row=9, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4)
+        )
+
+        format_row = ttk.Frame(form)
+        format_row.grid(row=10, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        format_row.columnconfigure(1, weight=1)
+
+        ttk.Label(format_row, text="Вход").grid(row=0, column=0, sticky="w")
+        ttk.Entry(format_row, textvariable=self.format_input_var).grid(row=0, column=1, sticky="ew", padx=6)
+        ttk.Button(format_row, text="...", width=4, command=self._pick_format_input).grid(row=0, column=2, padx=(0, 8))
+
+        ttk.Label(format_row, text="Выход").grid(row=1, column=0, sticky="w")
+        ttk.Entry(format_row, textvariable=self.format_output_var).grid(row=1, column=1, sticky="ew", padx=6)
+        ttk.Button(format_row, text="...", width=4, command=self._pick_format_output).grid(row=1, column=2, padx=(0, 8))
+
+        ttk.Label(format_row, text="Режим").grid(row=2, column=0, sticky="w")
+        ttk.Combobox(
+            format_row,
+            textvariable=self.format_kind_var,
+            state="readonly",
+            values=("old_schematic_v2", "new_schem_v3"),
+            width=20,
+        ).grid(row=2, column=1, sticky="w", padx=6, pady=(2, 0))
+        ttk.Button(
+            format_row,
+            text="Конвертировать формат",
+            style="Secondary.TButton",
+            command=self._convert_schematic_format,
+        ).grid(row=2, column=2, padx=(0, 0), pady=(2, 0))
+
         preview = ttk.LabelFrame(self, text="Лог mapping (группы блоков, сворачиваемые)", style="Panel.TLabelframe")
         preview.grid(row=3, column=0, sticky="nsew", padx=12, pady=6)
         preview.columnconfigure(0, weight=1)
@@ -391,6 +426,41 @@ class SchemconApp(ttk.Frame):
         path = filedialog.asksaveasfilename(defaultextension=".schem", filetypes=[("Schematic", "*.schem")])
         if path:
             self.output_schem_var.set(path)
+
+    def _pick_format_input(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("Schematic", "*.schem *.schematic")])
+        if path:
+            self.format_input_var.set(path)
+            if not self.format_output_var.get().strip() or self.format_output_var.get() == "converted_output.schematic":
+                src = pathlib.Path(path)
+                self.format_output_var.set(str(src.with_name(f"{src.stem}_legacy.schematic")))
+
+    def _pick_format_output(self) -> None:
+        path = filedialog.asksaveasfilename(defaultextension=".schematic", filetypes=[("Schematic", "*.schematic *.schem")])
+        if path:
+            self.format_output_var.set(path)
+
+    def _convert_schematic_format(self) -> None:
+        try:
+            input_path = self.format_input_var.get().strip() or self.input_schem_var.get().strip()
+            output_path = self.format_output_var.get().strip()
+            if not input_path or not pathlib.Path(input_path).exists():
+                raise FileNotFoundError("Укажите существующий входной .schem/.schematic файл.")
+            if not output_path:
+                raise ValueError("Укажите путь для выходного файла формата.")
+
+            mode = self.format_kind_var.get().strip() or "old_schematic_v2"
+            schem = load_schematic(input_path)
+            save_schematic(schem, output_path)
+
+            sponge_version = 2 if mode == "old_schematic_v2" else 3
+            export_fawe_compatible(output_path, sponge_version=sponge_version)
+
+            self._log(f"Формат конвертирован: {input_path} -> {output_path} (Sponge v{sponge_version})")
+            messagebox.showinfo("Готово", f"Формат схемы успешно конвертирован.\nРежим: Sponge v{sponge_version}")
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Ошибка конвертации формата: {exc}")
+            messagebox.showerror("Ошибка", str(exc))
 
     def _pick_fawe_dir(self) -> None:
         path = filedialog.askdirectory()
