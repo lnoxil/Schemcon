@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil, log2
+import gzip
 import re
+import struct
 from typing import Iterable
 
 import nbtlib
@@ -493,16 +495,50 @@ def _save_nbt(path: str, root: nbtlib.Compound) -> None:
         file_obj.save(path)
 
 
+
+
+def _force_root_name_in_gzip_nbt(path: str, root_name: str) -> None:
+    """Hard-force NBT root name in gzipped file bytes (legacy loader compatibility)."""
+    with open(path, "rb") as fh:
+        compressed = fh.read()
+    raw = gzip.decompress(compressed)
+    if len(raw) < 3 or raw[0] != 0x0A:
+        return
+
+    old_name_len = struct.unpack(">H", raw[1:3])[0]
+    start = 3
+    end = start + old_name_len
+    if end > len(raw):
+        return
+
+    new_name = root_name.encode("utf-8")
+    rebuilt = bytes([0x0A]) + len(new_name).to_bytes(2, "big") + new_name + raw[end:]
+
+    with open(path, "wb") as fh:
+        fh.write(gzip.compress(rebuilt))
+
 def _save_named_nbt(path: str, root: nbtlib.Compound, root_name: str) -> None:
     """Save with explicit root tag name (required by many /schematic loaders)."""
     try:
         file_obj = nbtlib.File(root, root_name=root_name)
     except TypeError:
         file_obj = nbtlib.File(root)
+
+    # Try setting well-known attributes used by different nbtlib versions.
+    for attr in ("root_name", "name"):
+        if hasattr(file_obj, attr):
+            try:
+                setattr(file_obj, attr, root_name)
+            except Exception:
+                pass
+
     try:
         file_obj.save(path, gzipped=True)
     except TypeError:
         file_obj.save(path)
+
+    # Final byte-level fixup so legacy 1.12 loaders always see root tag name "Schematic".
+    _force_root_name_in_gzip_nbt(path, root_name)
 
 
 @dataclass

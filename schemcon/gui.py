@@ -455,6 +455,16 @@ class SchemconApp(ttk.Frame):
                 raise ValueError("Укажите путь для выходного файла формата.")
 
             mode = self.format_kind_var.get().strip() or "old_schematic_v2"
+
+            out_path = pathlib.Path(output_path)
+            if mode == "old_schematic_v2":
+                safe_stem = self._sanitize_legacy_filename(out_path.stem)
+                if safe_stem != out_path.stem:
+                    out_path = out_path.with_name(f"{safe_stem}{out_path.suffix}")
+                    output_path = str(out_path)
+                    self.format_output_var.set(output_path)
+                    self._log(f"Legacy-имя файла скорректировано: {out_path.name}")
+
             schem = load_schematic(input_path)
             save_schematic(schem, output_path)
 
