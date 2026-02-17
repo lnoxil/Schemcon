@@ -28,7 +28,7 @@ from .registry import (
     load_registry,
     resolve_version_info,
 )
-from .schem import export_fawe_compatible, load_schematic, save_schematic
+from .schem import export_fawe_compatible, export_worldedit_legacy_schematic, load_schematic, save_schematic
 
 
 class SchemconApp(ttk.Frame):
@@ -455,9 +455,12 @@ class SchemconApp(ttk.Frame):
 
             sponge_version = 2 if mode == "old_schematic_v2" else 3
             export_fawe_compatible(output_path, sponge_version=sponge_version)
+            if mode == "old_schematic_v2":
+                export_worldedit_legacy_schematic(output_path)
 
-            self._log(f"Формат конвертирован: {input_path} -> {output_path} (Sponge v{sponge_version})")
-            messagebox.showinfo("Готово", f"Формат схемы успешно конвертирован.\nРежим: Sponge v{sponge_version}")
+            mode_label = "legacy /schematic (Schematic tag)" if mode == "old_schematic_v2" else f"Sponge v{sponge_version}"
+            self._log(f"Формат конвертирован: {input_path} -> {output_path} ({mode_label})")
+            messagebox.showinfo("Готово", f"Формат схемы успешно конвертирован.\nРежим: {mode_label}")
         except Exception as exc:  # noqa: BLE001
             self._log(f"Ошибка конвертации формата: {exc}")
             messagebox.showerror("Ошибка", str(exc))

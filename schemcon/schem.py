@@ -428,6 +428,59 @@ def export_fawe_compatible(path: str, sponge_version: int = 3) -> None:
     _save_nbt(path, sponge)
 
 
+def export_worldedit_legacy_schematic(path: str) -> None:
+    """Экспорт в legacy-совместимый формат с корневым тегом `Schematic`.
+
+    Некоторые старые плагины (/schematic load) ожидают именно вложенную структуру
+    `Schematic -> Blocks -> Palette/Data` и отказываются читать обычный Sponge root.
+    """
+    loaded = nbtlib.load(path)
+    root = _get_compound_root(loaded)
+
+    # Уже в legacy-обёртке.
+    if "Schematic" in root and isinstance(root.get("Schematic"), nbtlib.Compound):
+        inner = root["Schematic"]
+        if isinstance(inner.get("Blocks"), nbtlib.Compound):
+            return
+
+    # Если это litematic/regions — сначала соберём Sponge v2, затем обернём.
+    if not ("Palette" in root and "BlockData" in root):
+        sponge = _build_sponge_from_regions(root, sponge_version=2)
+        if sponge is None:
+            return
+        root = sponge
+
+    palette = root.get("Palette")
+    block_data = root.get("BlockData")
+    if not isinstance(palette, nbtlib.Compound) or block_data is None:
+        return
+
+    blocks_compound = nbtlib.Compound(
+        {
+            "Palette": nbtlib.Compound({str(k): nbtlib.Int(int(v)) for k, v in palette.items()}),
+            "Data": nbtlib.ByteArray(list(block_data)),
+            "BlockEntities": root.get("BlockEntities", nbtlib.List[nbtlib.Compound]([])),
+        }
+    )
+
+    inner = nbtlib.Compound(
+        {
+            "Version": nbtlib.Int(1),
+            "DataVersion": nbtlib.Int(int(root.get("DataVersion", 2586))),
+            "Width": nbtlib.Short(int(root.get("Width", 1))),
+            "Height": nbtlib.Short(int(root.get("Height", 1))),
+            "Length": nbtlib.Short(int(root.get("Length", 1))),
+            "Offset": root.get("Offset", nbtlib.IntArray([0, 0, 0])),
+            "Metadata": root.get("Metadata", nbtlib.Compound({"Name": nbtlib.String(""), "Author": nbtlib.String("Schemcon")})),
+            "Blocks": blocks_compound,
+            "Entities": root.get("Entities", nbtlib.List[nbtlib.Compound]([])),
+        }
+    )
+
+    legacy_root = nbtlib.Compound({"Schematic": inner})
+    _save_nbt(path, legacy_root)
+
+
 def _save_nbt(path: str, root: nbtlib.Compound) -> None:
     """КРИТИЧНО: GZIP сжатие включено."""
     file_obj = nbtlib.File(root)
