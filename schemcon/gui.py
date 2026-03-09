@@ -1602,8 +1602,15 @@ class SchemconApp(ttk.Frame):
                 if total <= 0:
                     return []
 
-                raw_bytes = bytes((int(v) & 0xFF) for v in block_data)
+                raw_values = [int(v) for v in block_data]
+                raw_bytes = bytes((int(v) & 0xFF) for v in raw_values)
                 palette_size = max(1, max(id_to_block.keys(), default=0) + 1)
+
+                def decode_direct(values: list[int]) -> list[int]:
+                    ids = [max(0, int(v)) for v in values[:total]]
+                    if len(ids) < total:
+                        ids.extend([0] * (total - len(ids)))
+                    return ids
 
                 def decode_varints(payload: bytes) -> list[int]:
                     ids: list[int] = []
@@ -1626,14 +1633,7 @@ class SchemconApp(ttk.Frame):
                         ids.extend([0] * (total - len(ids)))
                     return ids[:total]
 
-                def decode_packed(payload: bytes, byteorder: str) -> list[int]:
-                    longs: list[int] = []
-                    for i in range(0, len(payload), 8):
-                        chunk = payload[i:i + 8]
-                        if len(chunk) < 8:
-                            chunk = chunk + b"\x00" * (8 - len(chunk))
-                        longs.append(int.from_bytes(chunk, byteorder=byteorder, signed=True))
-
+                def decode_packed_longs(longs: list[int]) -> list[int]:
                     bits = max(2, math.ceil(math.log2(palette_size)))
                     mask = (1 << bits) - 1
                     ids: list[int] = []
@@ -1653,6 +1653,15 @@ class SchemconApp(ttk.Frame):
                         ids.append(value)
                     return ids
 
+                def decode_packed(payload: bytes, byteorder: str) -> list[int]:
+                    longs: list[int] = []
+                    for i in range(0, len(payload), 8):
+                        chunk = payload[i:i + 8]
+                        if len(chunk) < 8:
+                            chunk = chunk + b"\x00" * (8 - len(chunk))
+                        longs.append(int.from_bytes(chunk, byteorder=byteorder, signed=True))
+                    return decode_packed_longs(longs)
+
                 def decode_quality(ids: list[int]) -> tuple[int, int, int]:
                     step = max(1, total // 24000)
                     occupied = 0
@@ -1667,11 +1676,23 @@ class SchemconApp(ttk.Frame):
                                 occupied += 1
                     return occupied, in_range, max(1, sampled)
 
-                decoded = [
-                    ("varint", decode_varints(raw_bytes)),
-                    ("packed_be", decode_packed(raw_bytes, "big")),
-                    ("packed_le", decode_packed(raw_bytes, "little")),
-                ]
+                decoded: list[tuple[str, list[int]]] = []
+
+                # Some schematic variants store direct palette ids (already expanded per block).
+                if len(raw_values) >= max(1, total // 2):
+                    decoded.append(("direct", decode_direct(raw_values)))
+
+                # Long-array packed path (common in region-packed data).
+                if raw_values and len(raw_values) < total:
+                    decoded.append(("packed_longs", decode_packed_longs(raw_values)))
+
+                decoded.extend(
+                    [
+                        ("varint", decode_varints(raw_bytes)),
+                        ("packed_be", decode_packed(raw_bytes, "big")),
+                        ("packed_le", decode_packed(raw_bytes, "little")),
+                    ]
+                )
 
                 ranked: list[tuple[tuple[float, float, int], str, list[int]]] = []
                 for name, ids in decoded:
