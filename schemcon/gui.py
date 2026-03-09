@@ -1880,6 +1880,16 @@ class SchemconApp(ttk.Frame):
                 length = int(node.get("Length", 0))
                 palette = node.get("Palette")
                 block_data = node.get("BlockData")
+
+                # Some 1.20+/1.21 schems store data in nested Blocks.Palette / Blocks.Data.
+                blocks_payload = node.get("Blocks")
+                if hasattr(blocks_payload, "get"):
+                    nested_palette = blocks_payload.get("Palette")
+                    nested_data = blocks_payload.get("Data")
+                    if nested_palette is not None and nested_data is not None:
+                        palette = nested_palette
+                        block_data = nested_data
+
                 if not (width and height and length and palette is not None and block_data is not None):
                     continue
                 try:
@@ -1919,7 +1929,7 @@ class SchemconApp(ttk.Frame):
                         if score > best_root_score:
                             best_root_score = score
                             best_root_voxels = local_voxels
-                            self._log(f"3D root decoder selected: {decode_name}")
+                            self._log(f"3D root decoder selected: {decode_name} (source={'Blocks.Data' if hasattr(blocks_payload, 'get') and blocks_payload.get('Data') is not None else 'BlockData'})")
                 except Exception:
                     continue
 
