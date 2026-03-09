@@ -1979,6 +1979,31 @@ class SchemconApp(ttk.Frame):
                     )
                 self._log("3D preview: используется каталог блоков (fallback), т.к. геометрия схемы недоступна.")
 
+            # Ultimate fallback: build preview from full pending mapping (not only changed rows).
+            if not self._voxel_preview_data and self._pending_mapping:
+                entries = [src for src in sorted(self._pending_mapping.keys()) if self._normalize_block(src) != "minecraft:air"]
+                for idx, state in enumerate(entries):
+                    x = idx % 48
+                    z = (idx // 48) % 48
+                    y = idx // (48 * 48)
+                    meta = self._pending_mapping.get(state, {})
+                    target = meta.get("target", state)
+                    traits = categorize_block(state)
+                    self._voxel_preview_data.append(
+                        {
+                            "x": x,
+                            "y": y,
+                            "z": z,
+                            "source": state,
+                            "target": target,
+                            "shape": traits.shape,
+                            "changed": self._normalize_block(state) != self._normalize_block(target),
+                            "color": preview_color_for_state(state),
+                        }
+                    )
+                if self._voxel_preview_data:
+                    self._log("3D preview: fallback из полной pending mapping (геометрия схемы не прочитана).")
+
             if self._voxel_preview_data:
                 min_x = min(item["x"] for item in self._voxel_preview_data)
                 min_y = min(item["y"] for item in self._voxel_preview_data)
@@ -2008,6 +2033,11 @@ class SchemconApp(ttk.Frame):
                 yield from self._iter_compound_nodes(value)
 
     def _open_3d_mapper(self) -> None:
+        if not self._voxel_preview_data and self._pending_mapping:
+            input_schem = self.input_schem_var.get().strip() or self._pending_input_schem
+            if input_schem and pathlib.Path(input_schem).exists():
+                self._build_voxel_preview(input_schem, self._pending_mapping)
+
         if not self._voxel_preview_data:
             messagebox.showwarning("Нет данных", "Сначала постройте mapping (кнопка 1), затем откройте 3D-просмотр.")
             return
