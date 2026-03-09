@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import pathlib
+import random
 import re
 import shutil
 import zipfile
@@ -1664,6 +1665,44 @@ class SchemconApp(ttk.Frame):
                     ids.append(value)
                 return ids
 
+            def choose_index_layout(width: int, height: int, length: int, id_to_block: dict[int, str], palette_ids: list[int]) -> str:
+                total = width * height * length
+                if total <= 0:
+                    return "xzy"
+
+                def score(layout: str) -> int:
+                    step = max(1, total // 12000)
+                    occupied: set[tuple[int, int, int]] = set()
+                    for i in range(0, total, step):
+                        if layout == "xzy":
+                            x = i % width
+                            z = (i // width) % length
+                            y = i // (width * length)
+                        else:  # xyz
+                            x = i % width
+                            y = (i // width) % height
+                            z = i // (width * height)
+                        pid = palette_ids[i] if i < len(palette_ids) else 0
+                        state = id_to_block.get(pid, "minecraft:air")
+                        if self._normalize_block(state) != "minecraft:air":
+                            occupied.add((x, y, z))
+                    points = list(occupied)
+                    if not points:
+                        return 0
+                    acc = 0
+                    for x, y, z in points:
+                        if (x + 1, y, z) in occupied:
+                            acc += 1
+                        if (x, y + 1, z) in occupied:
+                            acc += 1
+                        if (x, y, z + 1) in occupied:
+                            acc += 1
+                    return acc
+
+                xzy = score("xzy")
+                xyz = score("xyz")
+                return "xzy" if xzy >= xyz else "xyz"
+
             def emit_voxels(
                 width: int,
                 height: int,
@@ -1672,11 +1711,15 @@ class SchemconApp(ttk.Frame):
                 palette_ids: list[int],
                 offset: tuple[int, int, int] = (0, 0, 0),
             ) -> None:
+                layout = choose_index_layout(width, height, length, id_to_block, palette_ids)
                 ox, oy, oz = offset
                 for y in range(height):
                     for z in range(length):
                         for x in range(width):
-                            idx = x + z * width + y * width * length
+                            if layout == "xzy":
+                                idx = x + z * width + y * width * length
+                            else:
+                                idx = x + y * width + z * width * height
                             palette_id = palette_ids[idx] if idx < len(palette_ids) else 0
                             state = id_to_block.get(palette_id, "minecraft:air")
                             if self._normalize_block(state) == "minecraft:air":
@@ -1827,13 +1870,9 @@ class SchemconApp(ttk.Frame):
                         item["y"] -= min_y
                         item["z"] -= min_z
 
-            if len(self._voxel_preview_data) > 40000:
-                step = max(2, int(round((len(self._voxel_preview_data) / 40000) ** (1 / 3))))
-                self._voxel_preview_data = [
-                    item
-                    for item in self._voxel_preview_data
-                    if (item["x"] % step == 0 and item["y"] % step == 0 and item["z"] % step == 0)
-                ]
+            if len(self._voxel_preview_data) > 120000:
+                rnd = random.Random(42)
+                self._voxel_preview_data = rnd.sample(self._voxel_preview_data, 120000)
 
             if self._voxel_preview_data:
                 self._log(f"3D preview: блоков для отображения {len(self._voxel_preview_data)}")
