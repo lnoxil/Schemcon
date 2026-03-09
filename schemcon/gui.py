@@ -30,7 +30,7 @@ from .registry import (
     load_registry,
     resolve_version_info,
 )
-from .schem import export_fawe_compatible, export_worldedit_legacy_schematic, load_schematic, save_schematic
+from .schem import _build_sponge_from_regions, export_fawe_compatible, export_worldedit_legacy_schematic, load_schematic, save_schematic
 
 
 class SchemconApp(ttk.Frame):
@@ -61,6 +61,7 @@ class SchemconApp(ttk.Frame):
         self._multi_target_versions: set[str] = set()
         self._active_shape_filter = "all"
         self._voxel_preview_data: list[dict[str, Any]] = []
+        self._preview_source_mode = "none"
 
         self._build_style()
         self._build_layout()
@@ -1539,9 +1540,21 @@ class SchemconApp(ttk.Frame):
 
     def _build_voxel_preview(self, schem_path: str, mapping: dict[str, dict[str, str]]) -> None:
         self._voxel_preview_data = []
+        self._preview_source_mode = "none"
         try:
             schematic = load_schematic(schem_path)
             root = schematic.root
+
+            # Normalize region-based schematics into sponge-like root when possible.
+            has_direct_root = all(root.get(k) is not None for k in ("Width", "Height", "Length", "Palette", "BlockData")) if hasattr(root, "get") else False
+            if not has_direct_root:
+                try:
+                    normalized = _build_sponge_from_regions(root, sponge_version=3)
+                    if normalized is not None:
+                        root = normalized
+                        self._log("3D preview: root normalized from Regions to Sponge format")
+                except Exception as exc:  # noqa: BLE001
+                    self._log(f"3D preview: normalize Regions skipped: {exc}")
 
             preview_color_cache: dict[str, tuple[int, int, int]] = {}
 
@@ -1864,6 +1877,7 @@ class SchemconApp(ttk.Frame):
                     continue
 
             if best_root_voxels:
+                self._preview_source_mode = "sponge_root"
                 self._voxel_preview_data.extend(best_root_voxels)
                 xs = [v["x"] for v in best_root_voxels]
                 ys = [v["y"] for v in best_root_voxels]
@@ -1952,6 +1966,7 @@ class SchemconApp(ttk.Frame):
                         best_legacy_voxels = local_voxels
 
                 if best_legacy_voxels:
+                    self._preview_source_mode = "legacy_schematic"
                     self._voxel_preview_data.extend(best_legacy_voxels)
 
             # Litematic-like Regions fallback
@@ -1995,6 +2010,7 @@ class SchemconApp(ttk.Frame):
                         emit_voxels(sx, sy, sz, state_by_id, ids, offset=(ox, oy, oz))
                         region_count += 1
                 if region_count:
+                    self._preview_source_mode = "regions"
                     self._log(f"3D preview: загружены регионы {region_count}")
 
             # Last-resort fallback: show changed mapping entries as a 3D catalog.
@@ -2017,6 +2033,7 @@ class SchemconApp(ttk.Frame):
                             "color": preview_color_for_state(state),
                         }
                     )
+                self._preview_source_mode = "mapping_rows_fallback"
                 self._log("3D preview: используется каталог блоков (fallback), т.к. геометрия схемы недоступна.")
 
             # Ultimate fallback: build preview from full pending mapping (not only changed rows).
@@ -2042,6 +2059,7 @@ class SchemconApp(ttk.Frame):
                         }
                     )
                 if self._voxel_preview_data:
+                    self._preview_source_mode = "pending_mapping_fallback"
                     self._log("3D preview: fallback из полной pending mapping (геометрия схемы не прочитана).")
 
             if self._voxel_preview_data:
@@ -2101,6 +2119,7 @@ class SchemconApp(ttk.Frame):
                             "color": self._block_color(src),
                         }
                     )
+                self._preview_source_mode = "open_mapping_rows_fallback"
                 self._log("3D preview: fallback из _mapping_rows (геометрия схемы недоступна).")
 
         if not self._voxel_preview_data:
@@ -2127,7 +2146,8 @@ class SchemconApp(ttk.Frame):
         canvas = tk.Canvas(win, bg="#1c1f26", highlightthickness=0)
         canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        preview_mode = "полная схема" if self._pending_input_schem and self._pending_mapping else "fallback-каталог"
+        mode_map = {"sponge_root": "схема(root)", "legacy_schematic": "legacy schematic", "regions": "regions", "mapping_rows_fallback": "fallback rows", "pending_mapping_fallback": "fallback pending", "open_mapping_rows_fallback": "fallback open", "none": "не определён"}
+        preview_mode = mode_map.get(self._preview_source_mode, self._preview_source_mode)
         state_label = ttk.Label(win, text=f"Клик по блоку выделяет его тип для массовой замены. Режим: {preview_mode}.")
         state_label.pack(fill="x", padx=8, pady=(0, 8))
 
