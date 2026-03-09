@@ -1542,6 +1542,41 @@ class SchemconApp(ttk.Frame):
             schematic = load_schematic(schem_path)
             root = schematic.root
 
+            preview_color_cache: dict[str, tuple[int, int, int]] = {}
+
+            def preview_color_for_state(state: str) -> tuple[int, int, int]:
+                cached = preview_color_cache.get(state)
+                if cached is not None:
+                    return cached
+                color = self._block_color(state)
+                if self._current_source_version:
+                    try:
+                        img = self._texture_icon(self._current_source_version, state)
+                        w = max(1, img.width())
+                        h = max(1, img.height())
+                        step_x = max(1, w // 4)
+                        step_y = max(1, h // 4)
+                        r_sum = g_sum = b_sum = count = 0
+                        for yy in range(0, h, step_y):
+                            for xx in range(0, w, step_x):
+                                px = img.get(xx, yy)
+                                if isinstance(px, tuple) and len(px) >= 3:
+                                    r, g, b = int(px[0]), int(px[1]), int(px[2])
+                                elif isinstance(px, str) and px.startswith('#') and len(px) >= 7:
+                                    r, g, b = int(px[1:3], 16), int(px[3:5], 16), int(px[5:7], 16)
+                                else:
+                                    continue
+                                r_sum += r
+                                g_sum += g
+                                b_sum += b
+                                count += 1
+                        if count > 0:
+                            color = (r_sum // count, g_sum // count, b_sum // count)
+                    except Exception:
+                        pass
+                preview_color_cache[state] = color
+                return color
+
             def decode_palette_ids_from_root(
                 width: int,
                 height: int,
@@ -1659,7 +1694,7 @@ class SchemconApp(ttk.Frame):
                                     "target": target,
                                     "shape": traits.shape,
                                     "changed": changed,
-                                    "color": self._block_color(state),
+                                    "color": preview_color_for_state(state),
                                 }
                             )
 
@@ -1674,6 +1709,48 @@ class SchemconApp(ttk.Frame):
                 id_to_block = {int(v): str(k) for k, v in palette.items()}
                 ids = decode_palette_ids_from_root(width, height, length, len(id_to_block), block_data, version)
                 emit_voxels(width, height, length, id_to_block, ids)
+
+            # Legacy .schematic (Blocks/Data[/AddBlocks]) fallback
+            if not self._voxel_preview_data and all(root.get(k) is not None for k in ("Width", "Height", "Length", "Blocks")):
+                lw = int(root.get("Width", 0))
+                lh = int(root.get("Height", 0))
+                ll = int(root.get("Length", 0))
+                blocks = root.get("Blocks")
+                add_blocks = root.get("AddBlocks")
+                total = lw * lh * ll
+                if lw > 0 and lh > 0 and ll > 0 and blocks is not None and total > 0:
+                    # Minimal legacy ID map (unknown ids fallback to stone so geometry remains visible).
+                    legacy_map = {
+                        0: "minecraft:air",
+                        1: "minecraft:stone",
+                        2: "minecraft:grass_block",
+                        3: "minecraft:dirt",
+                        4: "minecraft:cobblestone",
+                        5: "minecraft:oak_planks",
+                        12: "minecraft:sand",
+                        13: "minecraft:gravel",
+                        17: "minecraft:oak_log",
+                        20: "minecraft:glass",
+                        24: "minecraft:sandstone",
+                        35: "minecraft:white_wool",
+                        45: "minecraft:bricks",
+                        98: "minecraft:stone_bricks",
+                        155: "minecraft:quartz_block",
+                    }
+                    ids: list[int] = []
+                    add_values = [int(v) & 0xFF for v in add_blocks] if add_blocks is not None else []
+                    for i in range(min(total, len(blocks))):
+                        base = int(blocks[i]) & 0xFF
+                        extra = 0
+                        if add_values:
+                            nib = add_values[i // 2] if i // 2 < len(add_values) else 0
+                            extra = (nib & 0x0F) if (i % 2 == 0) else ((nib >> 4) & 0x0F)
+                        full_id = base | (extra << 8)
+                        ids.append(full_id)
+                    if len(ids) < total:
+                        ids.extend([0] * (total - len(ids)))
+                    id_to_block = {i: legacy_map.get(i, "minecraft:stone") for i in set(ids)}
+                    emit_voxels(lw, lh, ll, id_to_block, ids)
 
             # Litematic-like Regions fallback
             if not self._voxel_preview_data:
@@ -1735,7 +1812,7 @@ class SchemconApp(ttk.Frame):
                             "target": row["target"],
                             "shape": traits.shape,
                             "changed": True,
-                            "color": self._block_color(state),
+                            "color": preview_color_for_state(state),
                         }
                     )
                 self._log("3D preview: используется каталог блоков (fallback), т.к. геометрия схемы недоступна.")
@@ -1750,9 +1827,13 @@ class SchemconApp(ttk.Frame):
                         item["y"] -= min_y
                         item["z"] -= min_z
 
-            if len(self._voxel_preview_data) > 3500:
-                step = max(1, len(self._voxel_preview_data) // 3500)
-                self._voxel_preview_data = self._voxel_preview_data[::step]
+            if len(self._voxel_preview_data) > 40000:
+                step = max(2, int(round((len(self._voxel_preview_data) / 40000) ** (1 / 3))))
+                self._voxel_preview_data = [
+                    item
+                    for item in self._voxel_preview_data
+                    if (item["x"] % step == 0 and item["y"] % step == 0 and item["z"] % step == 0)
+                ]
 
             if self._voxel_preview_data:
                 self._log(f"3D preview: блоков для отображения {len(self._voxel_preview_data)}")
