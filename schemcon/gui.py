@@ -1640,21 +1640,38 @@ class SchemconApp(ttk.Frame):
                         ids.append(value)
                     return ids
 
-                def score(ids: list[int]) -> tuple[int, int]:
+                def score(ids: list[int]) -> tuple[int, int, int]:
                     step = max(1, total // 18000)
                     occupied = 0
                     in_range = 0
+                    sampled = 0
                     for i in range(0, total, step):
+                        sampled += 1
                         pid = ids[i] if i < len(ids) else 0
                         if 0 <= pid < palette_size:
                             in_range += 1
                             if self._normalize_block(id_to_block.get(pid, "minecraft:air")) != "minecraft:air":
                                 occupied += 1
-                    return occupied, in_range
+                    return occupied, in_range, max(1, sampled)
 
-                candidates = [decode_varints(raw_bytes), decode_packed(raw_bytes)]
-                best = max(candidates, key=score)
-                return best
+                ids_var = decode_varints(raw_bytes)
+                ids_packed = decode_packed(raw_bytes)
+                var_occ, var_in_range, var_sampled = score(ids_var)
+                packed_occ, packed_in_range, packed_sampled = score(ids_packed)
+
+                var_ok = (var_in_range / var_sampled) >= 0.55 and var_occ > 0
+                packed_ok = (packed_in_range / packed_sampled) >= 0.55 and packed_occ > 0
+
+                # In most WE/Sponge schematics BlockData behaves as varint stream;
+                # prefer it when plausible, fallback to packed only if varint looks broken.
+                if var_ok and not packed_ok:
+                    return ids_var
+                if packed_ok and not var_ok:
+                    return ids_packed
+                if var_ok and packed_ok:
+                    return ids_var if var_occ >= packed_occ * 0.85 else ids_packed
+                # Both look weak: pick the one with better in-range + occupancy score.
+                return ids_var if (var_occ + var_in_range) >= (packed_occ + packed_in_range) else ids_packed
 
             def decode_palette_ids_from_longs(width: int, height: int, length: int, palette_size: int, packed_longs: list[int]) -> list[int]:
                 total = width * height * length
@@ -1834,6 +1851,12 @@ class SchemconApp(ttk.Frame):
 
             if best_root_voxels:
                 self._voxel_preview_data.extend(best_root_voxels)
+                xs = [v["x"] for v in best_root_voxels]
+                ys = [v["y"] for v in best_root_voxels]
+                zs = [v["z"] for v in best_root_voxels]
+                self._log(
+                    f"3D root candidate: blocks={len(best_root_voxels)}, size={max(xs)-min(xs)+1}x{max(ys)-min(ys)+1}x{max(zs)-min(zs)+1}"
+                )
 
             # Legacy .schematic (Blocks/Data[/AddBlocks]) fallback (also search recursively)
             if not self._voxel_preview_data:
