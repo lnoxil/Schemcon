@@ -61,7 +61,7 @@ class SchemconApp(ttk.Frame):
         self._active_shape_filter = "all"
         self._voxel_preview_data: list[dict[str, Any]] = []
         self._preview_source_mode = "none"
-        self._preview_max_voxels = 120000
+        self._preview_max_voxels = 180000
         self._preview_shell_preserve = True
 
         self._build_style()
@@ -1544,8 +1544,6 @@ class SchemconApp(ttk.Frame):
     def _build_voxel_preview(self, schem_path: str, mapping: dict[str, dict[str, str]]) -> None:
         self._voxel_preview_data = []
         self._preview_source_mode = "none"
-        self._preview_max_voxels = 120000
-        self._preview_shell_preserve = True
         try:
             schematic = load_schematic(schem_path)
             root = schematic.root
@@ -2211,55 +2209,87 @@ class SchemconApp(ttk.Frame):
 
         by_coord = {(int(v["x"]), int(v["y"]), int(v["z"])): v for v in voxels}
         occupied = set(by_coord.keys())
+        xs = [c[0] for c in occupied]
+        ys = [c[1] for c in occupied]
+        zs = [c[2] for c in occupied]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        min_z, max_z = min(zs), max(zs)
 
-        shell: list[tuple[int, int, int]] = []
-        inner: list[tuple[int, int, int]] = []
-        for c in occupied:
-            x, y, z = c
-            is_shell = any(
+        shell: set[tuple[int, int, int]] = set()
+        for x, y, z in occupied:
+            if any(
                 (x + dx, y + dy, z + dz) not in occupied
                 for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
-            )
-            (shell if is_shell else inner).append(c)
+            ):
+                shell.add((x, y, z))
 
-        ordered_shell = sorted(shell, key=lambda c: (c[1], c[2], c[0]))
-        ordered_inner = sorted(inner, key=lambda c: (c[1], c[2], c[0]))
+        target_shell = min(len(shell), int(limit * 0.75)) if prefer_shell else min(len(shell), int(limit * 0.45))
+        target_inner = max(0, limit - target_shell)
 
-        selected: list[tuple[int, int, int]] = []
-        if prefer_shell:
-            shell_quota = min(len(ordered_shell), max(limit * 3 // 4, limit - len(ordered_inner) // 2))
-            selected.extend(ordered_shell[:shell_quota])
-        else:
-            selected.extend(ordered_shell[: min(len(ordered_shell), limit // 2)])
+        sx = max(1, max_x - min_x + 1)
+        sy = max(1, max_y - min_y + 1)
+        sz = max(1, max_z - min_z + 1)
 
-        remaining = max(0, limit - len(selected))
-        if remaining <= 0:
-            return [by_coord[c] for c in selected[:limit]]
+        def pick_bucketed(coords: set[tuple[int, int, int]], target: int) -> list[tuple[int, int, int]]:
+            if target <= 0 or not coords:
+                return []
+            if len(coords) <= target:
+                return sorted(coords, key=lambda c: (c[1], c[2], c[0]))
 
-        pool = ordered_inner if ordered_inner else ordered_shell
-        if not pool:
-            return []
+            # 3D deterministic bucketing: keeps spatial distribution, prevents line-like artifacts.
+            scale = (len(coords) / max(1, target)) ** (1.0 / 3.0)
+            bx = max(1, int(sx / max(1.0, scale)))
+            by = max(1, int(sy / max(1.0, scale)))
+            bz = max(1, int(sz / max(1.0, scale)))
 
-        # Deterministic grid sampling preserves the overall shape without random scatter.
-        step = max(1, len(pool) // remaining)
-        sampled = pool[::step][:remaining]
-        if len(sampled) < remaining:
-            sampled.extend(pool[: remaining - len(sampled)])
-        selected.extend(sampled[:remaining])
+            buckets: dict[tuple[int, int, int], tuple[float, tuple[int, int, int]]] = {}
+            for c in coords:
+                x, y, z = c
+                ix = ((x - min_x) * bx) // sx
+                iy = ((y - min_y) * by) // sy
+                iz = ((z - min_z) * bz) // sz
+                key = (ix, iy, iz)
 
-        # Ensure uniqueness in case shell and pool overlap fallback.
-        uniq = list(dict.fromkeys(selected))
-        if len(uniq) < limit:
-            extra_pool = ordered_shell + ordered_inner
-            seen = set(uniq)
-            for c in extra_pool:
-                if c not in seen:
-                    uniq.append(c)
-                    seen.add(c)
-                if len(uniq) >= limit:
+                cx = min_x + ((ix + 0.5) * sx) / bx
+                cy = min_y + ((iy + 0.5) * sy) / by
+                cz = min_z + ((iz + 0.5) * sz) / bz
+                dist2 = (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2
+
+                prev = buckets.get(key)
+                if prev is None or dist2 < prev[0]:
+                    buckets[key] = (dist2, c)
+
+            chosen = [entry[1] for _k, entry in sorted(buckets.items(), key=lambda kv: (kv[0][1], kv[0][2], kv[0][0]))]
+            if len(chosen) > target:
+                step = max(1, len(chosen) // target)
+                chosen = chosen[::step][:target]
+            if len(chosen) < target:
+                ordered_all = sorted(coords, key=lambda c: (c[1], c[2], c[0]))
+                chosen_set = set(chosen)
+                for c in ordered_all:
+                    if c not in chosen_set:
+                        chosen.append(c)
+                        chosen_set.add(c)
+                    if len(chosen) >= target:
+                        break
+            return chosen
+
+        shell_sel = pick_bucketed(shell, target_shell)
+        inner_pool = occupied - shell
+        inner_sel = pick_bucketed(inner_pool, target_inner)
+
+        selected = shell_sel + inner_sel
+        if len(selected) < limit:
+            selected_set = set(selected)
+            for c in sorted(occupied, key=lambda c: (c[1], c[2], c[0])):
+                if c not in selected_set:
+                    selected.append(c)
+                    selected_set.add(c)
+                if len(selected) >= limit:
                     break
 
-        return [by_coord[c] for c in uniq[:limit]]
+        return [by_coord[c] for c in selected[:limit]]
 
     def _iter_compound_nodes(self, node: Any):
         if hasattr(node, 'items'):
