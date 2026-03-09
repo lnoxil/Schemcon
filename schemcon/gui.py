@@ -1679,8 +1679,7 @@ class SchemconApp(ttk.Frame):
                     ranked.append(((inr / smp, occ / smp, occ), name, ids))
 
                 ranked.sort(key=lambda item: item[0], reverse=True)
-                top = ranked[:2]
-                return [(name, ids) for _q, name, ids in top]
+                return [(name, ids) for _q, name, ids in ranked]
 
             def decode_palette_ids_from_longs(width: int, height: int, length: int, palette_size: int, packed_longs: list[int]) -> list[int]:
                 total = width * height * length
@@ -1811,9 +1810,9 @@ class SchemconApp(ttk.Frame):
                                 }
                             )
 
-            def candidate_score(voxels: list[dict[str, Any]]) -> tuple[int, int, int, int]:
+            def candidate_score(voxels: list[dict[str, Any]]) -> tuple[int, int, int, int, int]:
                 if not voxels:
-                    return (0, 0, 0, 0)
+                    return (0, 0, 0, 0, 0)
                 xs = [v["x"] for v in voxels]
                 ys = [v["y"] for v in voxels]
                 zs = [v["z"] for v in voxels]
@@ -1821,12 +1820,26 @@ class SchemconApp(ttk.Frame):
                 dy = max(ys) - min(ys) + 1
                 dz = max(zs) - min(zs) + 1
                 nontrivial_dims = int(dx > 1) + int(dy > 1) + int(dz > 1)
-                bbox_volume = dx * dy * dz
-                return (nontrivial_dims, len(voxels), bbox_volume, min(dx, dy, dz))
+                min_dim = min(dx, dy, dz)
+                bbox_volume = max(1, dx * dy * dz)
+                density_scaled = int((len(voxels) * 1000) / bbox_volume)
+
+                occupied = {(v["x"], v["y"], v["z"]) for v in voxels}
+                neighbor_links = 0
+                for x, y, z in occupied:
+                    if (x + 1, y, z) in occupied:
+                        neighbor_links += 1
+                    if (x, y + 1, z) in occupied:
+                        neighbor_links += 1
+                    if (x, y, z + 1) in occupied:
+                        neighbor_links += 1
+
+                # Prioritize non-flat geometry first, then density/connectivity.
+                return (min_dim, nontrivial_dims, density_scaled, neighbor_links, len(voxels))
 
             # Sponge/WE root format (search recursively; many files wrap data in nested compounds)
             best_root_voxels: list[dict[str, Any]] = []
-            best_root_score: tuple[int, int, int, int] = (0, 0, 0, 0)
+            best_root_score: tuple[int, int, int, int, int] = (0, 0, 0, 0, 0)
             for node in self._iter_compound_nodes(root):
                 if not hasattr(node, "get"):
                     continue
@@ -1869,6 +1882,7 @@ class SchemconApp(ttk.Frame):
                                         }
                                     )
                         score = candidate_score(local_voxels)
+                        self._log(f"3D root decoder candidate {decode_name}: score={score}, blocks={len(local_voxels)}")
                         if score > best_root_score:
                             best_root_score = score
                             best_root_voxels = local_voxels
@@ -1889,7 +1903,7 @@ class SchemconApp(ttk.Frame):
             # Legacy .schematic (Blocks/Data[/AddBlocks]) fallback (also search recursively)
             if not self._voxel_preview_data:
                 best_legacy_voxels: list[dict[str, Any]] = []
-                best_legacy_score: tuple[int, int, int, int] = (0, 0, 0, 0)
+                best_legacy_score: tuple[int, int, int, int, int] = (0, 0, 0, 0, 0)
                 for node in self._iter_compound_nodes(root):
                     if not hasattr(node, "get"):
                         continue
