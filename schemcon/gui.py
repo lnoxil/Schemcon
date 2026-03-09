@@ -1584,7 +1584,7 @@ class SchemconApp(ttk.Frame):
                 length: int,
                 id_to_block: dict[int, str],
                 block_data: Any,
-            ) -> list[int]:
+            ) -> list[tuple[str, list[int]]]:
                 total = width * height * length
                 if total <= 0:
                     return []
@@ -1613,13 +1613,13 @@ class SchemconApp(ttk.Frame):
                         ids.extend([0] * (total - len(ids)))
                     return ids[:total]
 
-                def decode_packed(payload: bytes) -> list[int]:
+                def decode_packed(payload: bytes, byteorder: str) -> list[int]:
                     longs: list[int] = []
                     for i in range(0, len(payload), 8):
                         chunk = payload[i:i + 8]
                         if len(chunk) < 8:
                             chunk = chunk + b"\x00" * (8 - len(chunk))
-                        longs.append(int.from_bytes(chunk, byteorder="big", signed=True))
+                        longs.append(int.from_bytes(chunk, byteorder=byteorder, signed=True))
 
                     bits = max(2, math.ceil(math.log2(palette_size)))
                     mask = (1 << bits) - 1
@@ -1640,8 +1640,8 @@ class SchemconApp(ttk.Frame):
                         ids.append(value)
                     return ids
 
-                def score(ids: list[int]) -> tuple[int, int, int]:
-                    step = max(1, total // 18000)
+                def decode_quality(ids: list[int]) -> tuple[int, int, int]:
+                    step = max(1, total // 24000)
                     occupied = 0
                     in_range = 0
                     sampled = 0
@@ -1654,24 +1654,20 @@ class SchemconApp(ttk.Frame):
                                 occupied += 1
                     return occupied, in_range, max(1, sampled)
 
-                ids_var = decode_varints(raw_bytes)
-                ids_packed = decode_packed(raw_bytes)
-                var_occ, var_in_range, var_sampled = score(ids_var)
-                packed_occ, packed_in_range, packed_sampled = score(ids_packed)
+                decoded = [
+                    ("varint", decode_varints(raw_bytes)),
+                    ("packed_be", decode_packed(raw_bytes, "big")),
+                    ("packed_le", decode_packed(raw_bytes, "little")),
+                ]
 
-                var_ok = (var_in_range / var_sampled) >= 0.55 and var_occ > 0
-                packed_ok = (packed_in_range / packed_sampled) >= 0.55 and packed_occ > 0
+                ranked: list[tuple[tuple[float, float, int], str, list[int]]] = []
+                for name, ids in decoded:
+                    occ, inr, smp = decode_quality(ids)
+                    ranked.append(((inr / smp, occ / smp, occ), name, ids))
 
-                # In most WE/Sponge schematics BlockData behaves as varint stream;
-                # prefer it when plausible, fallback to packed only if varint looks broken.
-                if var_ok and not packed_ok:
-                    return ids_var
-                if packed_ok and not var_ok:
-                    return ids_packed
-                if var_ok and packed_ok:
-                    return ids_var if var_occ >= packed_occ * 0.85 else ids_packed
-                # Both look weak: pick the one with better in-range + occupancy score.
-                return ids_var if (var_occ + var_in_range) >= (packed_occ + packed_in_range) else ids_packed
+                ranked.sort(key=lambda item: item[0], reverse=True)
+                top = ranked[:2]
+                return [(name, ids) for _q, name, ids in top]
 
             def decode_palette_ids_from_longs(width: int, height: int, length: int, palette_size: int, packed_longs: list[int]) -> list[int]:
                 total = width * height * length
@@ -1831,36 +1827,39 @@ class SchemconApp(ttk.Frame):
                 try:
                     local_voxels = []
                     id_to_block = {int(v): str(k) for k, v in palette.items()}
-                    ids = decode_palette_ids_from_root(width, height, length, id_to_block, block_data)
-                    # Sponge index order: x + z*Width + y*Width*Length
-                    for y in range(height):
-                        for z in range(length):
-                            for x in range(width):
-                                idx = x + z * width + y * width * length
-                                palette_id = ids[idx] if idx < len(ids) else 0
-                                state = id_to_block.get(palette_id, "minecraft:air")
-                                if self._normalize_block(state) == "minecraft:air":
-                                    continue
-                                meta = mapping.get(state) or mapping.get(self._normalize_block(state)) or {}
-                                target = meta.get("target", state)
-                                changed = self._normalize_block(state) != self._normalize_block(target)
-                                traits = categorize_block(state)
-                                local_voxels.append(
-                                    {
-                                        "x": x,
-                                        "y": y,
-                                        "z": z,
-                                        "source": state,
-                                        "target": target,
-                                        "shape": traits.shape,
-                                        "changed": changed,
-                                        "color": preview_color_for_state(state),
-                                    }
-                                )
-                    score = candidate_score(local_voxels)
-                    if score > best_root_score:
-                        best_root_score = score
-                        best_root_voxels = local_voxels
+                    candidate_sets = decode_palette_ids_from_root(width, height, length, id_to_block, block_data)
+                    for decode_name, ids in candidate_sets:
+                        local_voxels = []
+                        # Sponge index order: x + z*Width + y*Width*Length
+                        for y in range(height):
+                            for z in range(length):
+                                for x in range(width):
+                                    idx = x + z * width + y * width * length
+                                    palette_id = ids[idx] if idx < len(ids) else 0
+                                    state = id_to_block.get(palette_id, "minecraft:air")
+                                    if self._normalize_block(state) == "minecraft:air":
+                                        continue
+                                    meta = mapping.get(state) or mapping.get(self._normalize_block(state)) or {}
+                                    target = meta.get("target", state)
+                                    changed = self._normalize_block(state) != self._normalize_block(target)
+                                    traits = categorize_block(state)
+                                    local_voxels.append(
+                                        {
+                                            "x": x,
+                                            "y": y,
+                                            "z": z,
+                                            "source": state,
+                                            "target": target,
+                                            "shape": traits.shape,
+                                            "changed": changed,
+                                            "color": preview_color_for_state(state),
+                                        }
+                                    )
+                        score = candidate_score(local_voxels)
+                        if score > best_root_score:
+                            best_root_score = score
+                            best_root_voxels = local_voxels
+                            self._log(f"3D root decoder selected: {decode_name}")
                 except Exception:
                     continue
 
