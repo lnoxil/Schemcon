@@ -1582,23 +1582,21 @@ class SchemconApp(ttk.Frame):
                 width: int,
                 height: int,
                 length: int,
-                palette_size: int,
+                id_to_block: dict[int, str],
                 block_data: Any,
-                version: int,
             ) -> list[int]:
                 total = width * height * length
                 if total <= 0:
                     return []
 
-                # nbtlib ByteArray may provide signed bytes (-128..127), normalize to 0..255 stream.
                 raw_bytes = bytes((int(v) & 0xFF) for v in block_data)
+                palette_size = max(1, len(id_to_block))
 
-                if version <= 2:
-                    # Sponge v2: BlockData is varint stream of palette ids.
+                def decode_varints(payload: bytes) -> list[int]:
                     ids: list[int] = []
                     value = 0
                     shift = 0
-                    for b in raw_bytes:
+                    for b in payload:
                         value |= (b & 0x7F) << shift
                         if (b & 0x80) == 0:
                             ids.append(value)
@@ -1613,34 +1611,50 @@ class SchemconApp(ttk.Frame):
                                 shift = 0
                     if len(ids) < total:
                         ids.extend([0] * (total - len(ids)))
+                    return ids[:total]
+
+                def decode_packed(payload: bytes) -> list[int]:
+                    longs: list[int] = []
+                    for i in range(0, len(payload), 8):
+                        chunk = payload[i:i + 8]
+                        if len(chunk) < 8:
+                            chunk = chunk + b"\x00" * (8 - len(chunk))
+                        longs.append(int.from_bytes(chunk, byteorder="big", signed=True))
+
+                    bits = max(2, math.ceil(math.log2(palette_size)))
+                    mask = (1 << bits) - 1
+                    ids: list[int] = []
+                    for i in range(total):
+                        bit_index = i * bits
+                        long_index = bit_index // 64
+                        start_bit = bit_index % 64
+                        if long_index >= len(longs):
+                            ids.append(0)
+                            continue
+                        a = int(longs[long_index]) & ((1 << 64) - 1)
+                        value = (a >> start_bit) & mask
+                        overflow = (start_bit + bits) - 64
+                        if overflow > 0 and long_index + 1 < len(longs):
+                            b = int(longs[long_index + 1]) & ((1 << 64) - 1)
+                            value |= (b & ((1 << overflow) - 1)) << (bits - overflow)
+                        ids.append(value)
                     return ids
 
-                # Sponge v3+: bit-packed longs stored as bytes (big-endian signed 64-bit).
-                longs: list[int] = []
-                for i in range(0, len(raw_bytes), 8):
-                    chunk = raw_bytes[i:i + 8]
-                    if len(chunk) < 8:
-                        chunk = chunk + b"\x00" * (8 - len(chunk))
-                    longs.append(int.from_bytes(chunk, byteorder="big", signed=True))
+                def score(ids: list[int]) -> tuple[int, int]:
+                    step = max(1, total // 18000)
+                    occupied = 0
+                    in_range = 0
+                    for i in range(0, total, step):
+                        pid = ids[i] if i < len(ids) else 0
+                        if 0 <= pid < palette_size:
+                            in_range += 1
+                            if self._normalize_block(id_to_block.get(pid, "minecraft:air")) != "minecraft:air":
+                                occupied += 1
+                    return occupied, in_range
 
-                bits = max(2, math.ceil(math.log2(max(1, palette_size))))
-                mask = (1 << bits) - 1
-                ids: list[int] = []
-                for i in range(total):
-                    bit_index = i * bits
-                    long_index = bit_index // 64
-                    start_bit = bit_index % 64
-                    if long_index >= len(longs):
-                        ids.append(0)
-                        continue
-                    a = int(longs[long_index]) & ((1 << 64) - 1)
-                    value = (a >> start_bit) & mask
-                    overflow = (start_bit + bits) - 64
-                    if overflow > 0 and long_index + 1 < len(longs):
-                        b = int(longs[long_index + 1]) & ((1 << 64) - 1)
-                        value |= (b & ((1 << overflow) - 1)) << (bits - overflow)
-                    ids.append(value)
-                return ids
+                candidates = [decode_varints(raw_bytes), decode_packed(raw_bytes)]
+                best = max(candidates, key=score)
+                return best
 
             def decode_palette_ids_from_longs(width: int, height: int, length: int, palette_size: int, packed_longs: list[int]) -> list[int]:
                 total = width * height * length
@@ -1747,10 +1761,9 @@ class SchemconApp(ttk.Frame):
             length = int(root.get("Length", 0))
             palette = root.get("Palette")
             block_data = root.get("BlockData")
-            version = int(root.get("Version", 3)) if root.get("Version") is not None else 3
             if width and height and length and palette is not None and block_data is not None:
                 id_to_block = {int(v): str(k) for k, v in palette.items()}
-                ids = decode_palette_ids_from_root(width, height, length, len(id_to_block), block_data, version)
+                ids = decode_palette_ids_from_root(width, height, length, id_to_block, block_data)
                 emit_voxels(width, height, length, id_to_block, ids)
 
             # Legacy .schematic (Blocks/Data[/AddBlocks]) fallback
