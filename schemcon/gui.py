@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import math
 import pathlib
-import random
 import re
 import shutil
 import zipfile
@@ -62,6 +61,8 @@ class SchemconApp(ttk.Frame):
         self._active_shape_filter = "all"
         self._voxel_preview_data: list[dict[str, Any]] = []
         self._preview_source_mode = "none"
+        self._preview_max_voxels = 120000
+        self._preview_shell_preserve = True
 
         self._build_style()
         self._build_layout()
@@ -1543,6 +1544,8 @@ class SchemconApp(ttk.Frame):
     def _build_voxel_preview(self, schem_path: str, mapping: dict[str, dict[str, str]]) -> None:
         self._voxel_preview_data = []
         self._preview_source_mode = "none"
+        self._preview_max_voxels = 120000
+        self._preview_shell_preserve = True
         try:
             schematic = load_schematic(schem_path)
             root = schematic.root
@@ -2185,14 +2188,78 @@ class SchemconApp(ttk.Frame):
                         item["y"] -= min_y
                         item["z"] -= min_z
 
-            if len(self._voxel_preview_data) > 120000:
-                rnd = random.Random(42)
-                self._voxel_preview_data = rnd.sample(self._voxel_preview_data, 120000)
+            if len(self._voxel_preview_data) > self._preview_max_voxels:
+                self._voxel_preview_data = self._reduce_voxels_for_preview(
+                    self._voxel_preview_data,
+                    self._preview_max_voxels,
+                    prefer_shell=self._preview_shell_preserve,
+                )
 
             if self._voxel_preview_data:
                 self._log(f"3D preview: блоков для отображения {len(self._voxel_preview_data)}")
         except Exception as exc:  # noqa: BLE001
             self._log(f"3D preview недоступен: {exc}")
+
+    def _reduce_voxels_for_preview(
+        self,
+        voxels: list[dict[str, Any]],
+        limit: int,
+        prefer_shell: bool = True,
+    ) -> list[dict[str, Any]]:
+        if len(voxels) <= limit:
+            return voxels
+
+        by_coord = {(int(v["x"]), int(v["y"]), int(v["z"])): v for v in voxels}
+        occupied = set(by_coord.keys())
+
+        shell: list[tuple[int, int, int]] = []
+        inner: list[tuple[int, int, int]] = []
+        for c in occupied:
+            x, y, z = c
+            is_shell = any(
+                (x + dx, y + dy, z + dz) not in occupied
+                for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+            )
+            (shell if is_shell else inner).append(c)
+
+        ordered_shell = sorted(shell, key=lambda c: (c[1], c[2], c[0]))
+        ordered_inner = sorted(inner, key=lambda c: (c[1], c[2], c[0]))
+
+        selected: list[tuple[int, int, int]] = []
+        if prefer_shell:
+            shell_quota = min(len(ordered_shell), max(limit * 3 // 4, limit - len(ordered_inner) // 2))
+            selected.extend(ordered_shell[:shell_quota])
+        else:
+            selected.extend(ordered_shell[: min(len(ordered_shell), limit // 2)])
+
+        remaining = max(0, limit - len(selected))
+        if remaining <= 0:
+            return [by_coord[c] for c in selected[:limit]]
+
+        pool = ordered_inner if ordered_inner else ordered_shell
+        if not pool:
+            return []
+
+        # Deterministic grid sampling preserves the overall shape without random scatter.
+        step = max(1, len(pool) // remaining)
+        sampled = pool[::step][:remaining]
+        if len(sampled) < remaining:
+            sampled.extend(pool[: remaining - len(sampled)])
+        selected.extend(sampled[:remaining])
+
+        # Ensure uniqueness in case shell and pool overlap fallback.
+        uniq = list(dict.fromkeys(selected))
+        if len(uniq) < limit:
+            extra_pool = ordered_shell + ordered_inner
+            seen = set(uniq)
+            for c in extra_pool:
+                if c not in seen:
+                    uniq.append(c)
+                    seen.add(c)
+                if len(uniq) >= limit:
+                    break
+
+        return [by_coord[c] for c in uniq[:limit]]
 
     def _iter_compound_nodes(self, node: Any):
         if hasattr(node, 'items'):
