@@ -1597,6 +1597,7 @@ class SchemconApp(ttk.Frame):
                 length: int,
                 id_to_block: dict[int, str],
                 block_data: Any,
+                version_hint: int | None = None,
             ) -> list[tuple[str, list[int]]]:
                 total = width * height * length
                 if total <= 0:
@@ -1686,13 +1687,23 @@ class SchemconApp(ttk.Frame):
                 if raw_values and len(raw_values) < total:
                     decoded.append(("packed_longs", decode_packed_longs(raw_values)))
 
-                decoded.extend(
-                    [
-                        ("varint", decode_varints(raw_bytes)),
-                        ("packed_be", decode_packed(raw_bytes, "big")),
-                        ("packed_le", decode_packed(raw_bytes, "little")),
-                    ]
-                )
+                # Prefer decoder order by schema version, fallback includes all.
+                if version_hint is not None and version_hint <= 2:
+                    decoded.extend(
+                        [
+                            ("varint", decode_varints(raw_bytes)),
+                            ("packed_be", decode_packed(raw_bytes, "big")),
+                            ("packed_le", decode_packed(raw_bytes, "little")),
+                        ]
+                    )
+                else:
+                    decoded.extend(
+                        [
+                            ("packed_be", decode_packed(raw_bytes, "big")),
+                            ("packed_le", decode_packed(raw_bytes, "little")),
+                            ("varint", decode_varints(raw_bytes)),
+                        ]
+                    )
 
                 ranked: list[tuple[tuple[float, float, int], str, list[int]]] = []
                 for name, ids in decoded:
@@ -1841,7 +1852,6 @@ class SchemconApp(ttk.Frame):
                 dy = max(ys) - min(ys) + 1
                 dz = max(zs) - min(zs) + 1
                 nontrivial_dims = int(dx > 1) + int(dy > 1) + int(dz > 1)
-                min_dim = min(dx, dy, dz)
                 bbox_volume = max(1, dx * dy * dz)
                 density_scaled = int((len(voxels) * 1000) / bbox_volume)
 
@@ -1855,8 +1865,9 @@ class SchemconApp(ttk.Frame):
                     if (x, y, z + 1) in occupied:
                         neighbor_links += 1
 
-                # Prioritize non-flat geometry first, then density/connectivity.
-                return (min_dim, nontrivial_dims, density_scaled, neighbor_links, len(voxels))
+                link_scaled = int((neighbor_links * 1000) / max(1, len(occupied)))
+                plausible = int(nontrivial_dims >= 2 and density_scaled >= 4 and link_scaled >= 2)
+                return (plausible, link_scaled, density_scaled, nontrivial_dims, len(voxels))
 
             # Sponge/WE root format (search recursively; many files wrap data in nested compounds)
             best_root_voxels: list[dict[str, Any]] = []
@@ -1874,7 +1885,8 @@ class SchemconApp(ttk.Frame):
                 try:
                     local_voxels = []
                     id_to_block = {int(v): str(k) for k, v in palette.items()}
-                    candidate_sets = decode_palette_ids_from_root(width, height, length, id_to_block, block_data)
+                    version_hint = int(node.get("Version", 3)) if node.get("Version") is not None else None
+                    candidate_sets = decode_palette_ids_from_root(width, height, length, id_to_block, block_data, version_hint)
                     for decode_name, ids in candidate_sets:
                         local_voxels = []
                         # Sponge index order: x + z*Width + y*Width*Length
