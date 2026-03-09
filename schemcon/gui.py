@@ -1785,27 +1785,73 @@ class SchemconApp(ttk.Frame):
                                 }
                             )
 
-            # Sponge/WE root format
-            width = int(root.get("Width", 0))
-            height = int(root.get("Height", 0))
-            length = int(root.get("Length", 0))
-            palette = root.get("Palette")
-            block_data = root.get("BlockData")
-            if width and height and length and palette is not None and block_data is not None:
-                id_to_block = {int(v): str(k) for k, v in palette.items()}
-                ids = decode_palette_ids_from_root(width, height, length, id_to_block, block_data)
-                emit_voxels(width, height, length, id_to_block, ids)
+            # Sponge/WE root format (search recursively; many files wrap data in nested compounds)
+            best_root_voxels: list[dict[str, Any]] = []
+            for node in self._iter_compound_nodes(root):
+                if not hasattr(node, "get"):
+                    continue
+                width = int(node.get("Width", 0))
+                height = int(node.get("Height", 0))
+                length = int(node.get("Length", 0))
+                palette = node.get("Palette")
+                block_data = node.get("BlockData")
+                if not (width and height and length and palette is not None and block_data is not None):
+                    continue
+                try:
+                    local_voxels = []
+                    id_to_block = {int(v): str(k) for k, v in palette.items()}
+                    ids = decode_palette_ids_from_root(width, height, length, id_to_block, block_data)
+                    # local emitter to compare candidates safely
+                    layout = choose_index_layout(width, height, length, id_to_block, ids)
+                    for y in range(height):
+                        for z in range(length):
+                            for x in range(width):
+                                idx = index_for_layout(x, y, z, width, height, length, layout)
+                                palette_id = ids[idx] if idx < len(ids) else 0
+                                state = id_to_block.get(palette_id, "minecraft:air")
+                                if self._normalize_block(state) == "minecraft:air":
+                                    continue
+                                meta = mapping.get(state) or mapping.get(self._normalize_block(state)) or {}
+                                target = meta.get("target", state)
+                                changed = self._normalize_block(state) != self._normalize_block(target)
+                                traits = categorize_block(state)
+                                local_voxels.append(
+                                    {
+                                        "x": x,
+                                        "y": y,
+                                        "z": z,
+                                        "source": state,
+                                        "target": target,
+                                        "shape": traits.shape,
+                                        "changed": changed,
+                                        "color": preview_color_for_state(state),
+                                    }
+                                )
+                    if len(local_voxels) > len(best_root_voxels):
+                        best_root_voxels = local_voxels
+                except Exception:
+                    continue
 
-            # Legacy .schematic (Blocks/Data[/AddBlocks]) fallback
-            if not self._voxel_preview_data and all(root.get(k) is not None for k in ("Width", "Height", "Length", "Blocks")):
-                lw = int(root.get("Width", 0))
-                lh = int(root.get("Height", 0))
-                ll = int(root.get("Length", 0))
-                blocks = root.get("Blocks")
-                add_blocks = root.get("AddBlocks")
-                total = lw * lh * ll
-                if lw > 0 and lh > 0 and ll > 0 and blocks is not None and total > 0:
-                    # Minimal legacy ID map (unknown ids fallback to stone so geometry remains visible).
+            if best_root_voxels:
+                self._voxel_preview_data.extend(best_root_voxels)
+
+            # Legacy .schematic (Blocks/Data[/AddBlocks]) fallback (also search recursively)
+            if not self._voxel_preview_data:
+                best_legacy_voxels: list[dict[str, Any]] = []
+                for node in self._iter_compound_nodes(root):
+                    if not hasattr(node, "get"):
+                        continue
+                    if not all(node.get(k) is not None for k in ("Width", "Height", "Length", "Blocks")):
+                        continue
+                    lw = int(node.get("Width", 0))
+                    lh = int(node.get("Height", 0))
+                    ll = int(node.get("Length", 0))
+                    blocks = node.get("Blocks")
+                    add_blocks = node.get("AddBlocks")
+                    total = lw * lh * ll
+                    if not (lw > 0 and lh > 0 and ll > 0 and blocks is not None and total > 0):
+                        continue
+
                     legacy_map = {
                         0: "minecraft:air",
                         1: "minecraft:stone",
@@ -1831,12 +1877,42 @@ class SchemconApp(ttk.Frame):
                         if add_values:
                             nib = add_values[i // 2] if i // 2 < len(add_values) else 0
                             extra = (nib & 0x0F) if (i % 2 == 0) else ((nib >> 4) & 0x0F)
-                        full_id = base | (extra << 8)
-                        ids.append(full_id)
+                        ids.append(base | (extra << 8))
                     if len(ids) < total:
                         ids.extend([0] * (total - len(ids)))
+
                     id_to_block = {i: legacy_map.get(i, "minecraft:stone") for i in set(ids)}
-                    emit_voxels(lw, lh, ll, id_to_block, ids)
+                    local_voxels: list[dict[str, Any]] = []
+                    layout = choose_index_layout(lw, lh, ll, id_to_block, ids)
+                    for y in range(lh):
+                        for z in range(ll):
+                            for x in range(lw):
+                                idx = index_for_layout(x, y, z, lw, lh, ll, layout)
+                                palette_id = ids[idx] if idx < len(ids) else 0
+                                state = id_to_block.get(palette_id, "minecraft:air")
+                                if self._normalize_block(state) == "minecraft:air":
+                                    continue
+                                meta = mapping.get(state) or mapping.get(self._normalize_block(state)) or {}
+                                target = meta.get("target", state)
+                                changed = self._normalize_block(state) != self._normalize_block(target)
+                                traits = categorize_block(state)
+                                local_voxels.append(
+                                    {
+                                        "x": x,
+                                        "y": y,
+                                        "z": z,
+                                        "source": state,
+                                        "target": target,
+                                        "shape": traits.shape,
+                                        "changed": changed,
+                                        "color": preview_color_for_state(state),
+                                    }
+                                )
+                    if len(local_voxels) > len(best_legacy_voxels):
+                        best_legacy_voxels = local_voxels
+
+                if best_legacy_voxels:
+                    self._voxel_preview_data.extend(best_legacy_voxels)
 
             # Litematic-like Regions fallback
             if not self._voxel_preview_data:
