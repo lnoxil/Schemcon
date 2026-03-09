@@ -57,6 +57,7 @@ class SchemconApp(ttk.Frame):
         self._pair_icon_cache: dict[str, tk.PhotoImage] = {}
         self._group_children: dict[str, list[dict[str, str]]] = {}
         self._multi_target_versions: set[str] = set()
+        self._active_shape_filter = "all"
 
         self._build_style()
         self._build_layout()
@@ -105,8 +106,9 @@ class SchemconApp(ttk.Frame):
         )
         style.map("Primary.TButton", background=[("active", accent_hover), ("pressed", accent_hover)])
         style.configure("Secondary.TButton", font=("Segoe UI", 9), padding=(8, 5))
+        style.configure("Chip.TButton", font=("Segoe UI", 8, "bold"), padding=(6, 3))
 
-        style.configure("Mapping.Treeview", rowheight=22, font=("Segoe UI", 9), fieldbackground="white", background="white")
+        style.configure("Mapping.Treeview", rowheight=24, font=("Segoe UI", 9), fieldbackground="white", background="white")
         style.configure("Mapping.Treeview.Heading", font=("Segoe UI", 9, "bold"), padding=(4, 4))
 
     def _build_layout(self) -> None:
@@ -266,16 +268,43 @@ class SchemconApp(ttk.Frame):
         top_controls.columnconfigure(0, weight=1)
 
         self.filter_var = tk.StringVar()
+        self.group_filter_var = tk.StringVar(value="Все группы")
+        self.quick_target_var = tk.StringVar()
         filter_entry = ttk.Entry(top_controls, textvariable=self.filter_var)
         filter_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         filter_entry.bind("<KeyRelease>", lambda _e: self._refresh_tree())
 
-        ttk.Button(top_controls, text="Изменить цель (выбранные блоки)", command=self._edit_selected_mapping, style="Secondary.TButton").grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(top_controls, text="Изменить цель для группы", command=self._edit_selected_group_mapping, style="Secondary.TButton").grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(top_controls, text="Выделить все блоки", command=self._select_all_mapping_rows, style="Secondary.TButton").grid(row=0, column=3, padx=(0, 8))
-        ttk.Button(top_controls, text="Экспорт лога цветов", command=self._export_color_log, style="Secondary.TButton").grid(row=0, column=4)
+        self.group_filter_combo = ttk.Combobox(
+            top_controls,
+            textvariable=self.group_filter_var,
+            state="readonly",
+            width=20,
+            values=("Все группы",),
+        )
+        self.group_filter_combo.grid(row=0, column=1, padx=(0, 8))
+        self.group_filter_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_tree())
 
-        cols = ("source", "target", "reason", "src_props", "dst_props")
+        self.quick_target_combo = ttk.Combobox(top_controls, textvariable=self.quick_target_var, width=34)
+        self.quick_target_combo.grid(row=0, column=2, padx=(0, 8))
+        self.quick_target_combo.bind("<Return>", lambda _e: self._apply_quick_target_to_selected())
+
+        ttk.Button(top_controls, text="Применить цель к выделению", command=self._apply_quick_target_to_selected, style="Secondary.TButton").grid(row=0, column=3, padx=(0, 8))
+        ttk.Button(top_controls, text="Применить цель к группе", command=self._apply_quick_target_to_group, style="Secondary.TButton").grid(row=0, column=4, padx=(0, 8))
+
+        chips = ttk.Frame(preview)
+        chips.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 2))
+        ttk.Label(chips, text="Форма:").pack(side="left", padx=(0, 6))
+        for shape, title in [("all", "Все"), ("full", "Полные"), ("stairs", "Лестницы"), ("slab", "Плиты"), ("wall", "Стены"), ("other", "Прочее")]:
+            ttk.Button(chips, text=title, style="Chip.TButton", command=lambda s=shape: self._set_shape_filter(s)).pack(side="left", padx=(0, 4))
+
+        actions = ttk.Frame(preview)
+        actions.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 4))
+        ttk.Button(actions, text="Изменить цель (выбранные блоки)", command=self._edit_selected_mapping, style="Secondary.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Изменить цель для группы", command=self._edit_selected_group_mapping, style="Secondary.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Выделить все блоки", command=self._select_all_mapping_rows, style="Secondary.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Экспорт лога цветов", command=self._export_color_log, style="Secondary.TButton").pack(side="left")
+
+        cols = ("source", "target", "reason", "group", "src_props", "dst_props")
         self.tree = ttk.Treeview(preview, columns=cols, show="tree headings", height=16, style="Mapping.Treeview", selectmode="extended")
         self.tree.heading("#0", text="Текстуры src|dst")
         self.tree.column("#0", width=130, anchor="center")
@@ -283,22 +312,24 @@ class SchemconApp(ttk.Frame):
         self.tree.heading("source", text="Исходный тег")
         self.tree.heading("target", text="Тег замены")
         self.tree.heading("reason", text="Причина")
+        self.tree.heading("group", text="Группа")
         self.tree.heading("src_props", text="Свойства исходного")
         self.tree.heading("dst_props", text="Свойства замены")
         self.tree.column("source", width=320)
         self.tree.column("target", width=320)
         self.tree.column("reason", width=150, anchor="center")
+        self.tree.column("group", width=170)
         self.tree.column("src_props", width=240)
         self.tree.column("dst_props", width=240)
 
-        self.tree.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        self.tree.grid(row=3, column=0, sticky="nsew", padx=(8, 0), pady=8)
         self.tree.bind("<Control-a>", self._select_all_mapping_rows)
         self.tree.tag_configure("changed", background="#fff5cc")
         self.tree.tag_configure("group", background="#dde9f7")
 
         ybar = ttk.Scrollbar(preview, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=ybar.set)
-        ybar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=8)
+        ybar.grid(row=3, column=1, sticky="ns", padx=(0, 8), pady=8)
 
         log_frame = ttk.LabelFrame(self, text="Системный лог", style="Panel.TLabelframe")
         log_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -785,6 +816,8 @@ class SchemconApp(ttk.Frame):
                     }
                 )
             self._refresh_tree()
+            self._update_target_picker_choices()
+            self._update_group_filter_choices()
             self._log(f"Реальных замен: {len(self._mapping_rows)}")
             messagebox.showinfo("Mapping готов", "Показаны только реальные замены, сгруппированные по типам.")
         except Exception as exc:  # noqa: BLE001
@@ -1351,12 +1384,17 @@ class SchemconApp(ttk.Frame):
 
     def _refresh_tree(self) -> None:
         query = self.filter_var.get().strip().lower()
+        group_filter = self.group_filter_var.get().strip()
         for item in self.tree.get_children():
             self.tree.delete(item)
 
         grouped: dict[str, list[dict[str, str]]] = {}
         for row in self._mapping_rows:
             if query and query not in row["source"].lower() and query not in row["target"].lower() and query not in row.get("group", "").lower():
+                continue
+            if group_filter and group_filter != "Все группы" and row.get("group", "") != group_filter:
+                continue
+            if not self._row_matches_shape_filter(row):
                 continue
             grouped.setdefault(row.get("group", "прочее"), []).append(row)
 
@@ -1366,7 +1404,7 @@ class SchemconApp(ttk.Frame):
                 "",
                 tk.END,
                 text=f"{group_name} ({len(rows)})",
-                values=("", "", "group", "", ""),
+                values=("", "", "group", group_name, "", ""),
                 tags=("group",),
                 open=True,
             )
@@ -1385,11 +1423,108 @@ class SchemconApp(ttk.Frame):
                         row["source"],
                         row["target"],
                         row["reason"],
+                        row["group"],
                         row["src_props"],
                         row["dst_props"],
                     ),
                     tags=("changed",),
                 )
+
+    def _set_shape_filter(self, shape: str) -> None:
+        self._active_shape_filter = shape
+        self._refresh_tree()
+
+    def _row_matches_shape_filter(self, row: dict[str, str]) -> bool:
+        if self._active_shape_filter == "all":
+            return True
+        shape = row.get("group", "").split("/", 1)[-1]
+        if self._active_shape_filter == "other":
+            return shape not in {"full", "stairs", "slab", "wall"}
+        return shape == self._active_shape_filter
+
+    def _update_target_picker_choices(self) -> None:
+        normalized = sorted(self._normalize_block(item) for item in self._current_target_blocks)
+        if not normalized:
+            return
+        self.quick_target_combo.configure(values=normalized)
+
+    def _update_group_filter_choices(self) -> None:
+        values = ["Все группы"] + sorted({row.get("group", "прочее") for row in self._mapping_rows})
+        self.group_filter_combo.configure(values=values)
+        if self.group_filter_var.get() not in values:
+            self.group_filter_var.set("Все группы")
+
+    def _validated_target_from_picker(self) -> str | None:
+        value = self.quick_target_var.get().strip()
+        if not value:
+            messagebox.showwarning("Нет цели", "Введите или выберите целевой блок в поле быстрого применения.")
+            return None
+        if ":" not in value:
+            value = f"minecraft:{value}"
+        base_target = self._normalize_block(value)
+        base_target_bare = base_target.replace("minecraft:", "")
+        if base_target not in self._current_target_blocks and base_target_bare not in self._current_target_blocks:
+            messagebox.showerror("Некорректная цель", f"Блок отсутствует в target версии: {base_target}")
+            return None
+        self.quick_target_var.set(base_target)
+        return base_target
+
+    def _apply_quick_target_to_selected(self) -> None:
+        target = self._validated_target_from_picker()
+        if not target:
+            return
+        leaf_items = self._selected_leaf_items()
+        if not leaf_items:
+            messagebox.showwarning("Нет выбора", "Выберите блоки для замены.")
+            return
+        rows_by_source = {row["source"]: row for row in self._mapping_rows}
+        changed = 0
+        for item in leaf_items:
+            values = self.tree.item(item, "values")
+            if not values:
+                continue
+            source = values[0]
+            if source not in self._pending_mapping:
+                continue
+            self._pending_mapping[source]["target"] = target
+            self._pending_mapping[source]["reason"] = "quick_picker_override"
+            row = rows_by_source.get(source)
+            if row:
+                row["target"] = target
+                row["reason"] = "quick_picker_override"
+                row["dst_props"] = self._props(target)
+                row["dst_color"] = str(self._block_color(target))
+                changed += 1
+        self._refresh_tree()
+        self._log(f"Quick replace: {changed} блоков -> {target}")
+
+    def _apply_quick_target_to_group(self) -> None:
+        target = self._validated_target_from_picker()
+        if not target:
+            return
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Нет выбора", "Выберите группу в дереве mapping.")
+            return
+        group_item = selected[0]
+        if self.tree.parent(group_item) != "":
+            group_item = self.tree.parent(group_item)
+        rows = self._group_children.get(group_item, [])
+        if not rows:
+            messagebox.showwarning("Пустая группа", "В выбранной группе нет блоков.")
+            return
+        for row in rows:
+            source = row["source"]
+            if source not in self._pending_mapping:
+                continue
+            self._pending_mapping[source]["target"] = target
+            self._pending_mapping[source]["reason"] = "quick_group_override"
+            row["target"] = target
+            row["reason"] = "quick_group_override"
+            row["dst_props"] = self._props(target)
+            row["dst_color"] = str(self._block_color(target))
+        self._refresh_tree()
+        self._log(f"Quick group replace: {len(rows)} блоков -> {target}")
 
 
 def launch_gui() -> None:
