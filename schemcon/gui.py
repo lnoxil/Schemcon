@@ -2038,8 +2038,33 @@ class SchemconApp(ttk.Frame):
             if input_schem and pathlib.Path(input_schem).exists():
                 self._build_voxel_preview(input_schem, self._pending_mapping)
 
+        # Final UI-safe fallback: always open 3D window even if geometry parsing failed.
         if not self._voxel_preview_data:
-            messagebox.showwarning("Нет данных", "Сначала постройте mapping (кнопка 1), затем откройте 3D-просмотр.")
+            rows = self._mapping_rows or []
+            if rows:
+                for idx, row in enumerate(rows[:5000]):
+                    x = idx % 40
+                    z = (idx // 40) % 40
+                    y = idx // (40 * 40)
+                    src = row.get("source", "minecraft:stone")
+                    tgt = row.get("target", src)
+                    tr = categorize_block(src)
+                    self._voxel_preview_data.append(
+                        {
+                            "x": x,
+                            "y": y,
+                            "z": z,
+                            "source": src,
+                            "target": tgt,
+                            "shape": tr.shape,
+                            "changed": self._normalize_block(src) != self._normalize_block(tgt),
+                            "color": self._block_color(src),
+                        }
+                    )
+                self._log("3D preview: fallback из _mapping_rows (геометрия схемы недоступна).")
+
+        if not self._voxel_preview_data:
+            messagebox.showwarning("Нет данных", "Не удалось получить блоки из схемы и mapping. Проверьте входной .schem и повторите шаг 1.")
             return
 
         win = tk.Toplevel(self)
@@ -2062,7 +2087,8 @@ class SchemconApp(ttk.Frame):
         canvas = tk.Canvas(win, bg="#1c1f26", highlightthickness=0)
         canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        state_label = ttk.Label(win, text="Клик по блоку выделяет его тип для массовой замены.")
+        preview_mode = "полная схема" if self._pending_input_schem and self._pending_mapping else "fallback-каталог"
+        state_label = ttk.Label(win, text=f"Клик по блоку выделяет его тип для массовой замены. Режим: {preview_mode}.")
         state_label.pack(fill="x", padx=8, pady=(0, 8))
 
         def project(px: float, py: float, pz: float) -> tuple[float, float, float]:
