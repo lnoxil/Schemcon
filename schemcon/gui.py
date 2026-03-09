@@ -1541,68 +1541,166 @@ class SchemconApp(ttk.Frame):
         try:
             schematic = load_schematic(schem_path)
             root = schematic.root
-            width = int(root.get("Width", 0))
-            height = int(root.get("Height", 0))
-            length = int(root.get("Length", 0))
-            palette = root.get("Palette")
-            block_data = root.get("BlockData")
-            if not width or not height or not length or palette is None or block_data is None:
-                return
 
-            id_to_block = {int(v): str(k) for k, v in palette.items()}
-            blocks_total = width * height * length
-            if blocks_total <= 0:
-                return
+            def decode_voxels(
+                width: int,
+                height: int,
+                length: int,
+                id_to_block: dict[int, str],
+                packed_values: list[int],
+                offset: tuple[int, int, int] = (0, 0, 0),
+            ) -> list[dict[str, Any]]:
+                blocks_total = width * height * length
+                if blocks_total <= 0:
+                    return []
+                bits = max(2, math.ceil(math.log2(max(1, len(id_to_block)))))
+                mask = (1 << bits) - 1
+                decoded: list[int] = []
+                for i in range(blocks_total):
+                    bit_index = i * bits
+                    long_index = bit_index // 64
+                    start_bit = bit_index % 64
+                    if long_index >= len(packed_values):
+                        decoded.append(0)
+                        continue
+                    a = int(packed_values[long_index]) & ((1 << 64) - 1)
+                    value = (a >> start_bit) & mask
+                    overflow = (start_bit + bits) - 64
+                    if overflow > 0 and long_index + 1 < len(packed_values):
+                        b = int(packed_values[long_index + 1]) & ((1 << 64) - 1)
+                        value |= (b & ((1 << overflow) - 1)) << (bits - overflow)
+                    decoded.append(value)
 
-            bits = max(2, math.ceil(math.log2(max(1, len(id_to_block)))))
-            packed = [int(v) for v in block_data]
-            decoded: list[int] = []
-            mask = (1 << bits) - 1
-            for i in range(blocks_total):
-                bit_index = i * bits
-                long_index = bit_index // 64
-                start = bit_index % 64
-                if long_index >= len(packed):
-                    decoded.append(0)
-                    continue
-                a = int(packed[long_index]) & ((1 << 64) - 1)
-                value = (a >> start) & mask
-                overflow = (start + bits) - 64
-                if overflow > 0 and long_index + 1 < len(packed):
-                    b = int(packed[long_index + 1]) & ((1 << 64) - 1)
-                    value |= (b & ((1 << overflow) - 1)) << (bits - overflow)
-                decoded.append(value)
+                ox, oy, oz = offset
+                voxels: list[dict[str, Any]] = []
+                for y in range(height):
+                    for z in range(length):
+                        for x in range(width):
+                            idx = x + z * width + y * width * length
+                            palette_id = decoded[idx] if idx < len(decoded) else 0
+                            state = id_to_block.get(palette_id, 'minecraft:air')
+                            if self._normalize_block(state) == 'minecraft:air':
+                                continue
+                            meta = mapping.get(state) or mapping.get(self._normalize_block(state)) or {}
+                            target = meta.get('target', state)
+                            changed = self._normalize_block(state) != self._normalize_block(target)
+                            traits = categorize_block(state)
+                            voxels.append(
+                                {
+                                    'x': ox + x,
+                                    'y': oy + y,
+                                    'z': oz + z,
+                                    'source': state,
+                                    'target': target,
+                                    'shape': traits.shape,
+                                    'changed': changed,
+                                    'color': self._block_color(state),
+                                }
+                            )
+                return voxels
 
-            for y in range(height):
-                for z in range(length):
-                    for x in range(width):
-                        idx = x + z * width + y * width * length
-                        palette_id = decoded[idx] if idx < len(decoded) else 0
-                        state = id_to_block.get(palette_id, "minecraft:air")
-                        if self._normalize_block(state) == "minecraft:air":
+            # Sponge / WE schem format
+            width = int(root.get('Width', 0))
+            height = int(root.get('Height', 0))
+            length = int(root.get('Length', 0))
+            palette = root.get('Palette')
+            block_data = root.get('BlockData')
+            if width and height and length and palette is not None and block_data is not None:
+                id_to_block = {int(v): str(k) for k, v in palette.items()}
+                self._voxel_preview_data.extend(
+                    decode_voxels(width, height, length, id_to_block, [int(v) for v in block_data])
+                )
+
+            # Litematic-like Regions fallback
+            if not self._voxel_preview_data:
+                region_count = 0
+                for node in self._iter_compound_nodes(root):
+                    regions = node.get('Regions') if hasattr(node, 'get') else None
+                    if not hasattr(regions, 'values'):
+                        continue
+                    for region in regions.values():
+                        if not hasattr(region, 'get'):
                             continue
-                        meta = mapping.get(state) or mapping.get(self._normalize_block(state)) or {}
-                        target = meta.get("target", state)
-                        changed = self._normalize_block(state) != self._normalize_block(target)
-                        traits = categorize_block(state)
-                        self._voxel_preview_data.append(
-                            {
-                                "x": x,
-                                "y": y,
-                                "z": z,
-                                "source": state,
-                                "target": target,
-                                "shape": traits.shape,
-                                "changed": changed,
-                                "color": self._block_color(state),
-                            }
+                        palette_list = region.get('BlockStatePalette')
+                        packed = region.get('BlockStates')
+                        size = region.get('Size')
+                        pos = region.get('Position')
+                        if not palette_list or packed is None or size is None:
+                            continue
+                        sx = abs(int(size.get('x', 0)))
+                        sy = abs(int(size.get('y', 0)))
+                        sz = abs(int(size.get('z', 0)))
+                        if sx <= 0 or sy <= 0 or sz <= 0:
+                            continue
+
+                        state_by_id: dict[int, str] = {}
+                        for idx, entry in enumerate(palette_list):
+                            if not hasattr(entry, 'get'):
+                                continue
+                            name = str(entry.get('Name', 'minecraft:air'))
+                            props = entry.get('Properties')
+                            if props and hasattr(props, 'items'):
+                                pairs = [f"{str(k)}={str(v)}" for k, v in sorted(props.items())]
+                                state_by_id[idx] = f"{name}[{','.join(pairs)}]"
+                            else:
+                                state_by_id[idx] = name
+
+                        ox = int(pos.get('x', 0)) if pos is not None else 0
+                        oy = int(pos.get('y', 0)) if pos is not None else 0
+                        oz = int(pos.get('z', 0)) if pos is not None else 0
+                        self._voxel_preview_data.extend(
+                            decode_voxels(sx, sy, sz, state_by_id, [int(v) for v in packed], offset=(ox, oy, oz))
                         )
+                        region_count += 1
+                if region_count:
+                    self._log(f'3D preview: загружены регионы {region_count}')
+
+            # Last-resort fallback: show changed mapping entries as a 3D catalog.
+            if not self._voxel_preview_data and self._mapping_rows:
+                for idx, row in enumerate(self._mapping_rows):
+                    x = idx % 32
+                    z = (idx // 32) % 32
+                    y = idx // (32 * 32)
+                    state = row['source']
+                    traits = categorize_block(state)
+                    self._voxel_preview_data.append(
+                        {
+                            'x': x,
+                            'y': y,
+                            'z': z,
+                            'source': state,
+                            'target': row['target'],
+                            'shape': traits.shape,
+                            'changed': True,
+                            'color': self._block_color(state),
+                        }
+                    )
+                self._log('3D preview: используется каталог блоков (fallback), т.к. геометрия схемы недоступна.')
+
+            if self._voxel_preview_data:
+                min_x = min(item['x'] for item in self._voxel_preview_data)
+                min_y = min(item['y'] for item in self._voxel_preview_data)
+                min_z = min(item['z'] for item in self._voxel_preview_data)
+                if min_x != 0 or min_y != 0 or min_z != 0:
+                    for item in self._voxel_preview_data:
+                        item['x'] -= min_x
+                        item['y'] -= min_y
+                        item['z'] -= min_z
 
             if len(self._voxel_preview_data) > 3500:
                 step = max(1, len(self._voxel_preview_data) // 3500)
                 self._voxel_preview_data = self._voxel_preview_data[::step]
         except Exception as exc:  # noqa: BLE001
-            self._log(f"3D preview недоступен: {exc}")
+            self._log(f'3D preview недоступен: {exc}')
+
+    def _iter_compound_nodes(self, node: Any):
+        if hasattr(node, 'items'):
+            yield node
+            for _k, value in node.items():
+                yield from self._iter_compound_nodes(value)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                yield from self._iter_compound_nodes(value)
 
     def _open_3d_mapper(self) -> None:
         if not self._voxel_preview_data:
