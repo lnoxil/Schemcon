@@ -1680,32 +1680,27 @@ class SchemconApp(ttk.Frame):
                     return occupied, in_range, max(1, sampled)
 
                 decoded: list[tuple[str, list[int]]] = []
+                looks_like_longs = any(v > 255 or v < -128 for v in raw_values)
 
-                # Some schematic variants store direct palette ids (already expanded per block).
-                if len(raw_values) >= max(1, total // 2):
-                    decoded.append(("direct", decode_direct(raw_values)))
+                # Some producers store direct palette ids per block.
+                if len(raw_values) == total:
+                    direct_ids = decode_direct(raw_values)
+                    bad = sum(1 for v in direct_ids if v < 0 or v >= palette_size)
+                    if bad <= max(1, total // 200):
+                        decoded.append(("direct", direct_ids))
 
                 # Long-array packed path (common in region-packed data).
-                if raw_values and len(raw_values) < total:
+                if looks_like_longs and raw_values:
                     decoded.append(("packed_longs", decode_packed_longs(raw_values)))
 
-                # Prefer decoder order by schema version, fallback includes all.
+                # Use version-aware defaults to avoid random line/noise artifacts.
                 if version_hint is not None and version_hint <= 2:
-                    decoded.extend(
-                        [
-                            ("varint", decode_varints(raw_bytes)),
-                            ("packed_be", decode_packed(raw_bytes, "big")),
-                            ("packed_le", decode_packed(raw_bytes, "little")),
-                        ]
-                    )
+                    decoded.append(("varint", decode_varints(raw_bytes)))
                 else:
-                    decoded.extend(
-                        [
-                            ("packed_be", decode_packed(raw_bytes, "big")),
-                            ("packed_le", decode_packed(raw_bytes, "little")),
-                            ("varint", decode_varints(raw_bytes)),
-                        ]
-                    )
+                    decoded.append(("packed_be", decode_packed(raw_bytes, "big")))
+                    decoded.append(("packed_le", decode_packed(raw_bytes, "little")))
+                    # keep varint as fallback for non-standard writers
+                    decoded.append(("varint", decode_varints(raw_bytes)))
 
                 ranked: list[tuple[tuple[float, float, int], str, list[int]]] = []
                 for name, ids in decoded:
@@ -1855,7 +1850,8 @@ class SchemconApp(ttk.Frame):
                 dz = max(zs) - min(zs) + 1
                 nontrivial_dims = int(dx > 1) + int(dy > 1) + int(dz > 1)
                 bbox_volume = max(1, dx * dy * dz)
-                density_scaled = int((len(voxels) * 1000) / bbox_volume)
+                density = len(voxels) / bbox_volume
+                density_scaled = int(density * 1000)
 
                 occupied = {(v["x"], v["y"], v["z"]) for v in voxels}
                 neighbor_links = 0
@@ -1868,7 +1864,8 @@ class SchemconApp(ttk.Frame):
                         neighbor_links += 1
 
                 link_scaled = int((neighbor_links * 1000) / max(1, len(occupied)))
-                plausible = int(nontrivial_dims >= 2 and density_scaled >= 4 and link_scaled >= 2)
+                # Reject pathological candidates: almost-empty lines or near-solid random noise.
+                plausible = int(nontrivial_dims >= 2 and 0.002 <= density <= 0.75 and link_scaled >= 2)
                 return (plausible, link_scaled, density_scaled, nontrivial_dims, len(voxels))
 
             # Sponge/WE root format (search recursively; many files wrap data in nested compounds)
