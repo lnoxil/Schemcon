@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import pathlib
 import re
 import shutil
@@ -58,6 +59,7 @@ class SchemconApp(ttk.Frame):
         self._group_children: dict[str, list[dict[str, str]]] = {}
         self._multi_target_versions: set[str] = set()
         self._active_shape_filter = "all"
+        self._voxel_preview_data: list[dict[str, Any]] = []
 
         self._build_style()
         self._build_layout()
@@ -221,18 +223,25 @@ class SchemconApp(ttk.Frame):
 
         ttk.Button(
             form,
+            text="Открыть 3D mapping-просмотр",
+            style="Secondary.TButton",
+            command=self._open_3d_mapper,
+        ).grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 6))
+
+        ttk.Button(
+            form,
             text="3) Batch: автоконвертация в отмеченные версии",
             style="Secondary.TButton",
             command=self._batch_convert_selected_versions,
-        ).grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        ).grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
 
-        ttk.Separator(form, orient="horizontal").grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(2, 6))
+        ttk.Separator(form, orient="horizontal").grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(2, 6))
         ttk.Label(form, text="Конвертация формата схемы (.schem -> .schematic для старых версий)", background="#ffffff").grid(
-            row=9, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4)
+            row=10, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4)
         )
 
         format_row = ttk.Frame(form)
-        format_row.grid(row=10, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        format_row.grid(row=11, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
         format_row.columnconfigure(1, weight=1)
 
         ttk.Label(format_row, text="Вход").grid(row=0, column=0, sticky="w")
@@ -818,6 +827,7 @@ class SchemconApp(ttk.Frame):
             self._refresh_tree()
             self._update_target_picker_choices()
             self._update_group_filter_choices()
+            self._build_voxel_preview(input_schem, mapping)
             self._log(f"Реальных замен: {len(self._mapping_rows)}")
             messagebox.showinfo("Mapping готов", "Показаны только реальные замены, сгруппированные по типам.")
         except Exception as exc:  # noqa: BLE001
@@ -1525,6 +1535,192 @@ class SchemconApp(ttk.Frame):
             row["dst_color"] = str(self._block_color(target))
         self._refresh_tree()
         self._log(f"Quick group replace: {len(rows)} блоков -> {target}")
+
+    def _build_voxel_preview(self, schem_path: str, mapping: dict[str, dict[str, str]]) -> None:
+        self._voxel_preview_data = []
+        try:
+            schematic = load_schematic(schem_path)
+            root = schematic.root
+            width = int(root.get("Width", 0))
+            height = int(root.get("Height", 0))
+            length = int(root.get("Length", 0))
+            palette = root.get("Palette")
+            block_data = root.get("BlockData")
+            if not width or not height or not length or palette is None or block_data is None:
+                return
+
+            id_to_block = {int(v): str(k) for k, v in palette.items()}
+            blocks_total = width * height * length
+            if blocks_total <= 0:
+                return
+
+            bits = max(2, math.ceil(math.log2(max(1, len(id_to_block)))))
+            packed = [int(v) for v in block_data]
+            decoded: list[int] = []
+            mask = (1 << bits) - 1
+            for i in range(blocks_total):
+                bit_index = i * bits
+                long_index = bit_index // 64
+                start = bit_index % 64
+                if long_index >= len(packed):
+                    decoded.append(0)
+                    continue
+                a = int(packed[long_index]) & ((1 << 64) - 1)
+                value = (a >> start) & mask
+                overflow = (start + bits) - 64
+                if overflow > 0 and long_index + 1 < len(packed):
+                    b = int(packed[long_index + 1]) & ((1 << 64) - 1)
+                    value |= (b & ((1 << overflow) - 1)) << (bits - overflow)
+                decoded.append(value)
+
+            for y in range(height):
+                for z in range(length):
+                    for x in range(width):
+                        idx = x + z * width + y * width * length
+                        palette_id = decoded[idx] if idx < len(decoded) else 0
+                        state = id_to_block.get(palette_id, "minecraft:air")
+                        if self._normalize_block(state) == "minecraft:air":
+                            continue
+                        meta = mapping.get(state) or mapping.get(self._normalize_block(state)) or {}
+                        target = meta.get("target", state)
+                        changed = self._normalize_block(state) != self._normalize_block(target)
+                        traits = categorize_block(state)
+                        self._voxel_preview_data.append(
+                            {
+                                "x": x,
+                                "y": y,
+                                "z": z,
+                                "source": state,
+                                "target": target,
+                                "shape": traits.shape,
+                                "changed": changed,
+                                "color": self._block_color(state),
+                            }
+                        )
+
+            if len(self._voxel_preview_data) > 3500:
+                step = max(1, len(self._voxel_preview_data) // 3500)
+                self._voxel_preview_data = self._voxel_preview_data[::step]
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"3D preview недоступен: {exc}")
+
+    def _open_3d_mapper(self) -> None:
+        if not self._voxel_preview_data:
+            messagebox.showwarning("Нет данных", "Сначала постройте mapping (кнопка 1), затем откройте 3D-просмотр.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title("3D mapping preview")
+        win.geometry("1200x760")
+
+        top = ttk.Frame(win)
+        top.pack(fill="x", padx=8, pady=8)
+        ttk.Label(top, text="3D-сцена: изменяемые блоки подсвечены красным.").pack(side="left")
+
+        camera_yaw = tk.DoubleVar(value=0.85)
+        camera_pitch = tk.DoubleVar(value=0.58)
+        zoom = tk.DoubleVar(value=24)
+        only_changed = tk.BooleanVar(value=False)
+
+        ttk.Checkbutton(top, text="Показывать только заменяемые", variable=only_changed).pack(side="right")
+        ttk.Scale(top, from_=14, to=42, variable=zoom, orient="horizontal", length=180).pack(side="right", padx=8)
+        ttk.Label(top, text="Zoom").pack(side="right")
+
+        canvas = tk.Canvas(win, bg="#1c1f26", highlightthickness=0)
+        canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        state_label = ttk.Label(win, text="Клик по блоку выделяет его тип для массовой замены.")
+        state_label.pack(fill="x", padx=8, pady=(0, 8))
+
+        def project(px: float, py: float, pz: float) -> tuple[float, float, float]:
+            yaw = camera_yaw.get()
+            pitch = camera_pitch.get()
+            cy, sy = math.cos(yaw), math.sin(yaw)
+            cp, sp = math.cos(pitch), math.sin(pitch)
+            rx = px * cy - pz * sy
+            rz = px * sy + pz * cy
+            ry = py * cp - rz * sp
+            depth = py * sp + rz * cp
+            cx, cyv = canvas.winfo_width() / 2, canvas.winfo_height() / 2
+            scale = zoom.get()
+            return cx + rx * scale, cyv - ry * scale, depth
+
+        draw_items: list[tuple[float, dict[str, Any], list[int], list[int], list[int]]] = []
+
+        def draw_scene() -> None:
+            canvas.delete("all")
+            draw_items.clear()
+            for block in self._voxel_preview_data:
+                if only_changed.get() and not block["changed"]:
+                    continue
+                x, y, z = block["x"], block["y"], block["z"]
+                top_pts = [project(x, y + 1, z), project(x + 1, y + 1, z), project(x + 1, y + 1, z + 1), project(x, y + 1, z + 1)]
+                left_pts = [project(x, y, z + 1), project(x, y + 1, z + 1), project(x, y + 1, z), project(x, y, z)]
+                right_pts = [project(x + 1, y, z), project(x + 1, y + 1, z), project(x + 1, y + 1, z + 1), project(x + 1, y, z + 1)]
+                depth = sum(p[2] for p in top_pts + left_pts + right_pts) / 12.0
+                draw_items.append((depth, block, [int(v) for p in top_pts for v in p[:2]], [int(v) for p in left_pts for v in p[:2]], [int(v) for p in right_pts for v in p[:2]]))
+
+            draw_items.sort(key=lambda item: item[0], reverse=True)
+            for _depth, block, top_xy, left_xy, right_xy in draw_items:
+                r, g, b = block["color"]
+                if block["changed"]:
+                    edge = "#ff5577"
+                else:
+                    edge = "#2b2b2b"
+                top_color = f"#{min(255, r + 30):02x}{min(255, g + 30):02x}{min(255, b + 30):02x}"
+                left_color = f"#{max(0, r - 20):02x}{max(0, g - 20):02x}{max(0, b - 20):02x}"
+                right_color = f"#{max(0, r - 40):02x}{max(0, g - 40):02x}{max(0, b - 40):02x}"
+
+                if block["shape"] == "slab":
+                    right_xy = right_xy[:2] + right_xy[2:4] + [right_xy[4], (right_xy[5] + right_xy[7]) // 2] + [right_xy[6], (right_xy[5] + right_xy[7]) // 2]
+                elif block["shape"] == "stairs":
+                    top_xy = top_xy[:4] + [(top_xy[2] + top_xy[4]) // 2, (top_xy[3] + top_xy[5]) // 2] + top_xy[6:]
+
+                canvas.create_polygon(left_xy, fill=left_color, outline=edge, width=1)
+                canvas.create_polygon(right_xy, fill=right_color, outline=edge, width=1)
+                canvas.create_polygon(top_xy, fill=top_color, outline=edge, width=1)
+
+        def nearest_block(event: tk.Event) -> dict[str, Any] | None:
+            best: tuple[float, dict[str, Any]] | None = None
+            for _depth, block, top_xy, _left, _right in draw_items:
+                xs = top_xy[::2]
+                ys = top_xy[1::2]
+                if min(xs) <= event.x <= max(xs) and min(ys) <= event.y <= max(ys):
+                    d = ((sum(xs) / len(xs)) - event.x) ** 2 + ((sum(ys) / len(ys)) - event.y) ** 2
+                    if best is None or d < best[0]:
+                        best = (d, block)
+            return best[1] if best else None
+
+        def on_click(event: tk.Event) -> None:
+            block = nearest_block(event)
+            if not block:
+                return
+            src = block["source"]
+            self.filter_var.set(src.split(":")[-1])
+            self._refresh_tree()
+            state_label.configure(text=f"Выбран блок: {src}. Подсвечен в mapping-фильтре.")
+
+        def on_drag(event: tk.Event) -> None:
+            if not hasattr(on_drag, "last"):
+                on_drag.last = (event.x, event.y)  # type: ignore[attr-defined]
+                return
+            lx, ly = on_drag.last  # type: ignore[attr-defined]
+            camera_yaw.set(camera_yaw.get() + (event.x - lx) * 0.01)
+            camera_pitch.set(min(1.3, max(0.2, camera_pitch.get() + (event.y - ly) * 0.006)))
+            on_drag.last = (event.x, event.y)  # type: ignore[attr-defined]
+            draw_scene()
+
+        def on_release(_event: tk.Event) -> None:
+            if hasattr(on_drag, "last"):
+                delattr(on_drag, "last")
+
+        canvas.bind("<Button-1>", on_click)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        for var in (zoom, only_changed):
+            var.trace_add("write", lambda *_args: draw_scene())
+
+        draw_scene()
 
 
 def launch_gui() -> None:
