@@ -2235,46 +2235,73 @@ class SchemconApp(ttk.Frame):
             scale = zoom.get()
             return cx + rx * scale, cyv - ry * scale, depth
 
-        draw_items: list[tuple[float, dict[str, Any], list[int], list[int], list[int]]] = []
+        draw_items: list[tuple[float, dict[str, Any], list[int] | None, list[int] | None, list[int] | None]] = []
 
         def draw_scene() -> None:
             canvas.delete("all")
             draw_items.clear()
-            for block in self._voxel_preview_data:
-                if only_changed.get() and not block["changed"]:
-                    continue
+
+            visible_blocks = [b for b in self._voxel_preview_data if not only_changed.get() or b["changed"]]
+            occupied = {(b["x"], b["y"], b["z"]) for b in visible_blocks}
+
+            for block in visible_blocks:
                 x, y, z = block["x"], block["y"], block["z"]
-                top_pts = [project(x, y + 1, z), project(x + 1, y + 1, z), project(x + 1, y + 1, z + 1), project(x, y + 1, z + 1)]
-                left_pts = [project(x, y, z + 1), project(x, y + 1, z + 1), project(x, y + 1, z), project(x, y, z)]
-                right_pts = [project(x + 1, y, z), project(x + 1, y + 1, z), project(x + 1, y + 1, z + 1), project(x + 1, y, z + 1)]
-                depth = sum(p[2] for p in top_pts + left_pts + right_pts) / 12.0
-                draw_items.append((depth, block, [int(v) for p in top_pts for v in p[:2]], [int(v) for p in left_pts for v in p[:2]], [int(v) for p in right_pts for v in p[:2]]))
+
+                show_top = (x, y + 1, z) not in occupied
+                show_left = (x - 1, y, z) not in occupied
+                show_right = (x + 1, y, z) not in occupied
+                if not (show_top or show_left or show_right):
+                    continue
+
+                top_xy: list[int] | None = None
+                left_xy: list[int] | None = None
+                right_xy: list[int] | None = None
+                depth_parts: list[float] = []
+
+                if show_top:
+                    top_pts = [project(x, y + 1, z), project(x + 1, y + 1, z), project(x + 1, y + 1, z + 1), project(x, y + 1, z + 1)]
+                    top_xy = [int(v) for p in top_pts for v in p[:2]]
+                    depth_parts.extend(p[2] for p in top_pts)
+                if show_left:
+                    left_pts = [project(x, y, z + 1), project(x, y + 1, z + 1), project(x, y + 1, z), project(x, y, z)]
+                    left_xy = [int(v) for p in left_pts for v in p[:2]]
+                    depth_parts.extend(p[2] for p in left_pts)
+                if show_right:
+                    right_pts = [project(x + 1, y, z), project(x + 1, y + 1, z), project(x + 1, y + 1, z + 1), project(x + 1, y, z + 1)]
+                    right_xy = [int(v) for p in right_pts for v in p[:2]]
+                    depth_parts.extend(p[2] for p in right_pts)
+
+                depth = sum(depth_parts) / max(1, len(depth_parts))
+                draw_items.append((depth, block, top_xy, left_xy, right_xy))
 
             draw_items.sort(key=lambda item: item[0], reverse=True)
             for _depth, block, top_xy, left_xy, right_xy in draw_items:
                 r, g, b = block["color"]
-                if block["changed"]:
-                    edge = "#ff5577"
-                else:
-                    edge = "#2b2b2b"
+                edge = "#ff5577" if block["changed"] else "#2b2b2b"
                 top_color = f"#{min(255, r + 30):02x}{min(255, g + 30):02x}{min(255, b + 30):02x}"
                 left_color = f"#{max(0, r - 20):02x}{max(0, g - 20):02x}{max(0, b - 20):02x}"
                 right_color = f"#{max(0, r - 40):02x}{max(0, g - 40):02x}{max(0, b - 40):02x}"
 
-                if block["shape"] == "slab":
-                    right_xy = right_xy[:2] + right_xy[2:4] + [right_xy[4], (right_xy[5] + right_xy[7]) // 2] + [right_xy[6], (right_xy[5] + right_xy[7]) // 2]
-                elif block["shape"] == "stairs":
+                if top_xy and block["shape"] == "stairs":
                     top_xy = top_xy[:4] + [(top_xy[2] + top_xy[4]) // 2, (top_xy[3] + top_xy[5]) // 2] + top_xy[6:]
+                if right_xy and block["shape"] == "slab":
+                    right_xy = right_xy[:2] + right_xy[2:4] + [right_xy[4], (right_xy[5] + right_xy[7]) // 2] + [right_xy[6], (right_xy[5] + right_xy[7]) // 2]
 
-                canvas.create_polygon(left_xy, fill=left_color, outline=edge, width=1)
-                canvas.create_polygon(right_xy, fill=right_color, outline=edge, width=1)
-                canvas.create_polygon(top_xy, fill=top_color, outline=edge, width=1)
+                if left_xy:
+                    canvas.create_polygon(left_xy, fill=left_color, outline=edge, width=1)
+                if right_xy:
+                    canvas.create_polygon(right_xy, fill=right_color, outline=edge, width=1)
+                if top_xy:
+                    canvas.create_polygon(top_xy, fill=top_color, outline=edge, width=1)
 
         def nearest_block(event: tk.Event) -> dict[str, Any] | None:
             best: tuple[float, dict[str, Any]] | None = None
-            for _depth, block, top_xy, _left, _right in draw_items:
-                xs = top_xy[::2]
-                ys = top_xy[1::2]
+            for _depth, block, top_xy, left_xy, right_xy in draw_items:
+                probe = top_xy or left_xy or right_xy
+                if not probe:
+                    continue
+                xs = probe[::2]
+                ys = probe[1::2]
                 if min(xs) <= event.x <= max(xs) and min(ys) <= event.y <= max(ys):
                     d = ((sum(xs) / len(xs)) - event.x) ** 2 + ((sum(ys) / len(ys)) - event.y) ** 2
                     if best is None or d < best[0]:
