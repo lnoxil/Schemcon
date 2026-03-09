@@ -829,8 +829,10 @@ class SchemconApp(ttk.Frame):
             self._refresh_tree()
             self._update_target_picker_choices()
             self._update_group_filter_choices()
-            self._build_voxel_preview(input_schem, mapping)
+            self._voxel_preview_data = []
+            self._preview_source_mode = "none"
             self._log(f"Реальных замен: {len(self._mapping_rows)}")
+            self._log("3D preview теперь строится по требованию (кнопка открыть 3D), чтобы не подвешивать шаг построения mapping.")
             messagebox.showinfo("Mapping готов", "Показаны только реальные замены, сгруппированные по типам.")
         except Exception as exc:  # noqa: BLE001
             self._log(f"Ошибка: {exc}")
@@ -2151,7 +2153,19 @@ class SchemconApp(ttk.Frame):
         if not self._voxel_preview_data and self._pending_mapping:
             input_schem = self.input_schem_var.get().strip() or self._pending_input_schem
             if input_schem and pathlib.Path(input_schem).exists():
+                try:
+                    top = self.winfo_toplevel()
+                    top.configure(cursor="watch")
+                    self.update_idletasks()
+                except Exception:
+                    top = None
+                self._log("3D preview: подготовка данных начата...")
                 self._build_voxel_preview(input_schem, self._pending_mapping)
+                if top is not None:
+                    try:
+                        top.configure(cursor="")
+                    except Exception:
+                        pass
 
         # Final UI-safe fallback: always open 3D window even if geometry parsing failed.
         if not self._voxel_preview_data:
