@@ -1802,8 +1802,22 @@ class SchemconApp(ttk.Frame):
                                 }
                             )
 
+            def candidate_score(voxels: list[dict[str, Any]]) -> tuple[int, int, int, int]:
+                if not voxels:
+                    return (0, 0, 0, 0)
+                xs = [v["x"] for v in voxels]
+                ys = [v["y"] for v in voxels]
+                zs = [v["z"] for v in voxels]
+                dx = max(xs) - min(xs) + 1
+                dy = max(ys) - min(ys) + 1
+                dz = max(zs) - min(zs) + 1
+                nontrivial_dims = int(dx > 1) + int(dy > 1) + int(dz > 1)
+                bbox_volume = dx * dy * dz
+                return (nontrivial_dims, len(voxels), bbox_volume, min(dx, dy, dz))
+
             # Sponge/WE root format (search recursively; many files wrap data in nested compounds)
             best_root_voxels: list[dict[str, Any]] = []
+            best_root_score: tuple[int, int, int, int] = (0, 0, 0, 0)
             for node in self._iter_compound_nodes(root):
                 if not hasattr(node, "get"):
                     continue
@@ -1818,12 +1832,11 @@ class SchemconApp(ttk.Frame):
                     local_voxels = []
                     id_to_block = {int(v): str(k) for k, v in palette.items()}
                     ids = decode_palette_ids_from_root(width, height, length, id_to_block, block_data)
-                    # local emitter to compare candidates safely
-                    layout = choose_index_layout(width, height, length, id_to_block, ids)
+                    # Sponge index order: x + z*Width + y*Width*Length
                     for y in range(height):
                         for z in range(length):
                             for x in range(width):
-                                idx = index_for_layout(x, y, z, width, height, length, layout)
+                                idx = x + z * width + y * width * length
                                 palette_id = ids[idx] if idx < len(ids) else 0
                                 state = id_to_block.get(palette_id, "minecraft:air")
                                 if self._normalize_block(state) == "minecraft:air":
@@ -1844,7 +1857,9 @@ class SchemconApp(ttk.Frame):
                                         "color": preview_color_for_state(state),
                                     }
                                 )
-                    if len(local_voxels) > len(best_root_voxels):
+                    score = candidate_score(local_voxels)
+                    if score > best_root_score:
+                        best_root_score = score
                         best_root_voxels = local_voxels
                 except Exception:
                     continue
@@ -1855,12 +1870,13 @@ class SchemconApp(ttk.Frame):
                 ys = [v["y"] for v in best_root_voxels]
                 zs = [v["z"] for v in best_root_voxels]
                 self._log(
-                    f"3D root candidate: blocks={len(best_root_voxels)}, size={max(xs)-min(xs)+1}x{max(ys)-min(ys)+1}x{max(zs)-min(zs)+1}"
+                    f"3D root candidate: blocks={len(best_root_voxels)}, size={max(xs)-min(xs)+1}x{max(ys)-min(ys)+1}x{max(zs)-min(zs)+1}, score={best_root_score}"
                 )
 
             # Legacy .schematic (Blocks/Data[/AddBlocks]) fallback (also search recursively)
             if not self._voxel_preview_data:
                 best_legacy_voxels: list[dict[str, Any]] = []
+                best_legacy_score: tuple[int, int, int, int] = (0, 0, 0, 0)
                 for node in self._iter_compound_nodes(root):
                     if not hasattr(node, "get"):
                         continue
@@ -1906,11 +1922,11 @@ class SchemconApp(ttk.Frame):
 
                     id_to_block = {i: legacy_map.get(i, "minecraft:stone") for i in set(ids)}
                     local_voxels: list[dict[str, Any]] = []
-                    layout = choose_index_layout(lw, lh, ll, id_to_block, ids)
+                    # Legacy MCEdit index order: x + z*Width + y*Width*Length
                     for y in range(lh):
                         for z in range(ll):
                             for x in range(lw):
-                                idx = index_for_layout(x, y, z, lw, lh, ll, layout)
+                                idx = x + z * lw + y * lw * ll
                                 palette_id = ids[idx] if idx < len(ids) else 0
                                 state = id_to_block.get(palette_id, "minecraft:air")
                                 if self._normalize_block(state) == "minecraft:air":
@@ -1931,7 +1947,9 @@ class SchemconApp(ttk.Frame):
                                         "color": preview_color_for_state(state),
                                     }
                                 )
-                    if len(local_voxels) > len(best_legacy_voxels):
+                    score = candidate_score(local_voxels)
+                    if score > best_legacy_score:
+                        best_legacy_score = score
                         best_legacy_voxels = local_voxels
 
                 if best_legacy_voxels:
