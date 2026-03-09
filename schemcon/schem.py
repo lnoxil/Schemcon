@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil, log2
+import gzip
 import re
+import struct
 from typing import Iterable
 
 import nbtlib
@@ -428,6 +430,62 @@ def export_fawe_compatible(path: str, sponge_version: int = 3) -> None:
     _save_nbt(path, sponge)
 
 
+def export_worldedit_legacy_schematic(path: str) -> None:
+    """Экспорт в legacy-совместимый формат с корневым тегом `Schematic`.
+
+    Некоторые старые плагины (/schematic load) ожидают именно вложенную структуру
+    `Schematic -> Blocks -> Palette/Data` и отказываются читать обычный Sponge root.
+    """
+    loaded = nbtlib.load(path)
+    root = _get_compound_root(loaded)
+
+    # If schematic payload already present at root, just force legacy root name.
+    if int(root.get("Width", 0)) > 0 and int(root.get("Height", 0)) > 0 and int(root.get("Length", 0)) > 0:
+        has_payload = isinstance(root.get("Blocks"), nbtlib.Compound) or (
+            isinstance(root.get("Palette"), nbtlib.Compound) and root.get("BlockData") is not None
+        )
+        if has_payload:
+            _save_named_nbt(path, root, "Schematic")
+            return
+
+    # Если это litematic/regions — сначала соберём Sponge v2, затем обернём.
+    if not ("Palette" in root and "BlockData" in root):
+        sponge = _build_sponge_from_regions(root, sponge_version=2)
+        if sponge is None:
+            return
+        root = sponge
+
+    palette = root.get("Palette")
+    block_data = root.get("BlockData")
+    if not isinstance(palette, nbtlib.Compound) or block_data is None:
+        return
+
+    blocks_compound = nbtlib.Compound(
+        {
+            "Palette": nbtlib.Compound({str(k): nbtlib.Int(int(v)) for k, v in palette.items()}),
+            "Data": nbtlib.ByteArray(list(block_data)),
+            "BlockEntities": root.get("BlockEntities", nbtlib.List[nbtlib.Compound]([])),
+        }
+    )
+
+    inner = nbtlib.Compound(
+        {
+            "Version": nbtlib.Int(1),
+            "DataVersion": nbtlib.Int(int(root.get("DataVersion", 2586))),
+            "Width": nbtlib.Short(int(root.get("Width", 1))),
+            "Height": nbtlib.Short(int(root.get("Height", 1))),
+            "Length": nbtlib.Short(int(root.get("Length", 1))),
+            "Offset": root.get("Offset", nbtlib.IntArray([0, 0, 0])),
+            "Metadata": root.get("Metadata", nbtlib.Compound({"Name": nbtlib.String(""), "Author": nbtlib.String("Schemcon")})),
+            "Blocks": blocks_compound,
+            "Entities": root.get("Entities", nbtlib.List[nbtlib.Compound]([])),
+        }
+    )
+
+    # Legacy loaders on 1.12 usually require ROOT TAG NAME == "Schematic".
+    _save_named_nbt(path, inner, "Schematic")
+
+
 def _save_nbt(path: str, root: nbtlib.Compound) -> None:
     """КРИТИЧНО: GZIP сжатие включено."""
     file_obj = nbtlib.File(root)
@@ -435,6 +493,52 @@ def _save_nbt(path: str, root: nbtlib.Compound) -> None:
         file_obj.save(path, gzipped=True)
     except TypeError:
         file_obj.save(path)
+
+
+
+
+def _force_root_name_in_gzip_nbt(path: str, root_name: str) -> None:
+    """Hard-force NBT root name in gzipped file bytes (legacy loader compatibility)."""
+    with open(path, "rb") as fh:
+        compressed = fh.read()
+    raw = gzip.decompress(compressed)
+    if len(raw) < 3 or raw[0] != 0x0A:
+        return
+
+    old_name_len = struct.unpack(">H", raw[1:3])[0]
+    start = 3
+    end = start + old_name_len
+    if end > len(raw):
+        return
+
+    new_name = root_name.encode("utf-8")
+    rebuilt = bytes([0x0A]) + len(new_name).to_bytes(2, "big") + new_name + raw[end:]
+
+    with open(path, "wb") as fh:
+        fh.write(gzip.compress(rebuilt))
+
+def _save_named_nbt(path: str, root: nbtlib.Compound, root_name: str) -> None:
+    """Save with explicit root tag name (required by many /schematic loaders)."""
+    try:
+        file_obj = nbtlib.File(root, root_name=root_name)
+    except TypeError:
+        file_obj = nbtlib.File(root)
+
+    # Try setting well-known attributes used by different nbtlib versions.
+    for attr in ("root_name", "name"):
+        if hasattr(file_obj, attr):
+            try:
+                setattr(file_obj, attr, root_name)
+            except Exception:
+                pass
+
+    try:
+        file_obj.save(path, gzipped=True)
+    except TypeError:
+        file_obj.save(path)
+
+    # Final byte-level fixup so legacy 1.12 loaders always see root tag name "Schematic".
+    _force_root_name_in_gzip_nbt(path, root_name)
 
 
 @dataclass

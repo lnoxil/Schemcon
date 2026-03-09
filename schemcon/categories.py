@@ -44,7 +44,12 @@ SHAPE_RULES = {
 }
 
 FAMILY_RULES = {
+    "grass": "grass",
+    "fern": "grass",
+    "vine": "vine",
+    "roots": "roots",
     "flower": "flower",
+    "petals": "flower",
     "sapling": "sapling",
     "coral": "coral",
     "glass": "glass",
@@ -56,6 +61,12 @@ FAMILY_RULES = {
     "leaves": "leaves",
     "dirt": "dirt",
     "stone": "stone",
+    "andesite": "stone",
+    "diorite": "stone",
+    "granite": "stone",
+    "cobblestone": "stone",
+    "smooth_stone": "stone",
+    "stone_brick": "stone",
     "ore": "ore",
     "sand": "sand",
     "gravel": "gravel",
@@ -64,9 +75,32 @@ FAMILY_RULES = {
     "brick": "brick",
     "tuff": "tuff",
     "deepslate": "deepslate",
+    "blackstone": "blackstone",
+    "calcite": "stone",
+    "dripstone": "stone",
+    "amethyst": "amethyst",
+    "mud": "dirt",
+    "moss": "plant",
+    "bookshelf": "planks",
+    "bamboo_block": "log",
+    "bamboo_mosaic": "planks",
+    "cherry": "planks",
+    "mangrove": "planks",
     "prismarine": "prismarine",
     "nether": "nether",
     "end": "end",
+    "copper": "copper",
+    "oxidized": "copper",
+    "weathered": "copper",
+    "exposed": "copper",
+    "waxed": "copper",
+    "azalea": "azalea",
+    "lichen": "lichen",
+    "dripleaf": "plant",
+    "head": "head",
+    "skull": "head",
+    "composter": "planks",
+    "barrel": "planks",
 }
 
 BLOCK_CATEGORIES = {
@@ -110,6 +144,8 @@ BLOCK_CATEGORIES = {
     "dark_oak_sapling": "sapling",
     "cherry_sapling": "sapling",
     "mangrove_propagule": "sapling",
+    "azalea": "sapling",
+    "flowering_azalea": "sapling",
     "wheat": "crop",
     "carrots": "crop",
     "potatoes": "crop",
@@ -126,12 +162,24 @@ BLOCK_CATEGORIES = {
     "twisting_vines": "vine",
     "cave_vines": "vine",
     "hanging_roots": "roots",
+    "glow_lichen": "vine",
+    "small_dripleaf": "water_plant",
+    "big_dripleaf": "water_plant",
+    "pink_petals": "flower_small",
     "mangrove_roots": "roots",
     "bamboo": "bamboo",
     "bamboo_sapling": "bamboo",
     "potted": "potted_plant",
     "flower_pot": "potted_plant",
     "decorated_pot": "pot_block",
+    "banner": "banner",
+    "wall_banner": "banner",
+    "player_head": "head",
+    "player_wall_head": "head",
+    "skeleton_skull": "head",
+    "skeleton_wall_skull": "head",
+    "skull": "head",
+    "wall_skull": "head",
     "command_block": "command_block",
     "chain_command_block": "command_block",
     "repeating_command_block": "command_block",
@@ -168,6 +216,10 @@ BLOCK_PROPERTIES = {
         "mushroom_small",
         "potted_plant",
     },
+    "banner": {
+        "banner",
+        "head",
+    },
     "liquid": {
         "liquid_water",
         "liquid_lava",
@@ -195,21 +247,30 @@ def _detect_color(name: str) -> tuple[int, int, int] | None:
 
 
 def _normalize_name(name: str) -> str:
-    if ":" in name:
-        return name.split(":", 1)[1]
-    return name
+    base = name.split("[", 1)[0]
+    if ":" in base:
+        return base.split(":", 1)[1]
+    return base
+
+
+def _matches_rule(needle: str, tokens: set[str], name: str) -> bool:
+    # compound needles (like fence_gate) should match in full name
+    if "_" in needle:
+        return needle in name
+    # short words must match full token (avoid waterlogged -> log/wall)
+    return needle in tokens
 
 
 def _detect_shape(tokens: set[str], name: str) -> str:
     for needle, shape in SHAPE_RULES.items():
-        if needle in name or needle in tokens:
+        if _matches_rule(needle, tokens, name):
             return shape
     return "full"
 
 
 def _detect_family(tokens: set[str], name: str) -> str:
     for needle, family in FAMILY_RULES.items():
-        if needle in name or needle in tokens:
+        if _matches_rule(needle, tokens, name):
             return family
     return "generic"
 
@@ -230,9 +291,26 @@ def _detect_block_type(category: str, family: str) -> str:
         if category in categories:
             return block_type
 
-    if family in {"flower", "sapling"}:
+    if family in {"flower", "sapling", "azalea", "plant", "lichen", "bamboo"}:
         return "plant"
-    if family in {"glass", "wool", "concrete", "stone", "dirt"}:
+    if family in {"grass", "vine", "roots"}:
+        return "plant"
+    if family in {
+        "glass",
+        "wool",
+        "concrete",
+        "stone",
+        "dirt",
+        "copper",
+        "planks",
+        "log",
+        "deepslate",
+        "blackstone",
+        "prismarine",
+        "amethyst",
+        "brick",
+        "head",
+    }:
         return "solid"
 
     return "solid"

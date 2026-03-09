@@ -32,15 +32,101 @@ def _as_base_blockstate(name: str) -> str:
 LEGACY_BLOCK_ALIASES = {
     "minecraft:grass": "minecraft:grass_block",
     "minecraft:grass_path": "minecraft:dirt_path",
+    "minecraft:flowing_water": "minecraft:water",
+    "minecraft:flowing_lava": "minecraft:lava",
+    "minecraft:brick_block": "minecraft:bricks",
+    "minecraft:melon_block": "minecraft:melon",
+    "minecraft:standing_sign": "minecraft:oak_sign",
+    "minecraft:wall_sign": "minecraft:oak_wall_sign",
+    "minecraft:wall_banner": "minecraft:white_wall_banner",
+    "minecraft:bed": "minecraft:red_bed",
+    "minecraft:wooden_button": "minecraft:oak_button",
+    "minecraft:double_fern": "minecraft:tall_grass",
+    "minecraft:double_stone_slab2": "minecraft:smooth_stone_slab",
+    "minecraft:red_sandstone_double_slab": "minecraft:red_sandstone_slab",
+    "minecraft:quartz_double_slab": "minecraft:quartz_slab",
+    "minecraft:acacia_double_slab": "minecraft:acacia_slab",
+    "minecraft:dark_oak_double_slab": "minecraft:dark_oak_slab",
+    "minecraft:cobblestone_double_slab": "minecraft:cobblestone_slab",
+    "minecraft:brick_double_slab": "minecraft:brick_slab",
+}
+
+for _color in [
+    "white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray",
+    "light_gray", "cyan", "purple", "blue", "brown", "green", "red", "black",
+]:
+    LEGACY_BLOCK_ALIASES[f"minecraft:{_color}_stained_hardened_clay"] = f"minecraft:{_color}_terracotta"
+
+
+_ALLOWED_PROPS_BY_EXACT = {
+    "minecraft:oak_button": {"face", "facing", "powered"},
+    "minecraft:heavy_weighted_pressure_plate": {"power"},
+    "minecraft:light_weighted_pressure_plate": {"power"},
+    "minecraft:oak_wall_sign": {"facing", "waterlogged"},
+    "minecraft:oak_sign": {"rotation", "waterlogged"},
+    "minecraft:white_wall_banner": {"facing"},
+    "minecraft:red_bed": {"facing", "occupied", "part"},
+}
+
+_ALLOWED_PROPS_BY_SUFFIX = {
+    "_slab": {"type", "waterlogged"},
+    "_stairs": {"facing", "half", "shape", "waterlogged"},
+    "_button": {"face", "facing", "powered"},
+    "_pressure_plate": {"power", "powered"},
+    "_wall_sign": {"facing", "waterlogged"},
+    "_sign": {"rotation", "waterlogged"},
+    "_wall_banner": {"facing"},
+    "_door": {"facing", "half", "hinge", "open", "powered"},
+    "_trapdoor": {"facing", "half", "open", "powered", "waterlogged"},
+    "_fence_gate": {"facing", "open", "in_wall", "powered"},
+    "_fence": {"north", "south", "east", "west", "waterlogged"},
+    "_wall": {"up", "north", "south", "east", "west", "waterlogged"},
+    "_pane": {"north", "south", "east", "west", "waterlogged"},
 }
 
 
 def _canonicalize_blockstate_name(value: str) -> str:
     base, props = _split_blockstate(value)
     canonical_base = LEGACY_BLOCK_ALIASES.get(base, base)
-    if props and canonical_base == base:
-        return value
-    return canonical_base
+    if not props:
+        return canonical_base
+
+    parsed_props: dict[str, str] = {}
+    for item in props.split(","):
+        if "=" not in item:
+            continue
+        key, raw_val = item.split("=", 1)
+        parsed_props[key.strip()] = raw_val.strip()
+
+    allowed = _ALLOWED_PROPS_BY_EXACT.get(canonical_base)
+    if allowed is None:
+        for suffix, suffix_allowed in _ALLOWED_PROPS_BY_SUFFIX.items():
+            if canonical_base.endswith(suffix):
+                allowed = suffix_allowed
+                break
+
+    # If we don't have explicit rules for this block type,
+    # preserve its state instead of dropping potentially valid properties
+    # (e.g. fences, gates, walls, panes and other directional blocks).
+    if allowed is None:
+        return f"{canonical_base}[{props}]"
+
+    filtered = {k: v for k, v in parsed_props.items() if k in allowed}
+
+    # Legacy double slabs should become modern slabs with type=double.
+    if base.endswith("_double_slab") or base.endswith("_double_slab2") or "double_slab" in base:
+        filtered["type"] = "double"
+
+    # Legacy booleans on plates/buttons are represented differently between versions.
+    if canonical_base.endswith("_pressure_plate") and "powered" in filtered and "power" not in filtered:
+        filtered["power"] = "15" if filtered["powered"] == "true" else "0"
+        filtered.pop("powered", None)
+
+    # Keep deterministic property order to avoid palette bloat.
+    if not filtered:
+        return canonical_base
+    props_str = ",".join(f"{k}={filtered[k]}" for k in sorted(filtered))
+    return f"{canonical_base}[{props_str}]"
 
 
 def _sanitize_mapped_target(target: str, allowed_targets: set[str] | None = None) -> str:
@@ -50,10 +136,20 @@ def _sanitize_mapped_target(target: str, allowed_targets: set[str] | None = None
     if allowed_targets is None:
         return normalized
 
-    if normalized in allowed_targets:
+    # Registry-based allow-lists may contain legacy ids; compare on canonicalized forms too.
+    canonical_allowed: set[str] = set()
+    canonical_allowed_bases: set[str] = set()
+    for raw in allowed_targets:
+        canon = _canonicalize_blockstate_name(_normalize_blockstate_string(raw))
+        canonical_allowed.add(canon)
+        canonical_allowed_bases.add(_as_base_blockstate(canon))
+
+    # Registry-based allow-lists generally contain only base block ids.
+    # If base exists in target version, keep full blockstate properties.
+    if normalized in allowed_targets or normalized in canonical_allowed:
         return normalized
-    if base in allowed_targets:
-        return base
+    if base in allowed_targets or base in canonical_allowed_bases:
+        return normalized
     return "minecraft:air"
 def _decode_varint_block_data(data: bytes, expected_count: int) -> list[int]:
     values: list[int] = []
@@ -190,18 +286,24 @@ def _rebuild_nested_palette_blockdata(
 def _resolve_target(name: str, mapping: dict[str, str], allowed_targets: set[str] | None = None) -> str:
     direct = mapping.get(name)
     if direct:
-        return _sanitize_mapped_target(direct, allowed_targets)
+        direct_name, direct_props = _split_blockstate(direct)
+        if direct_props:
+            return _sanitize_mapped_target(direct, allowed_targets)
+        # Most generated mappings are base-id only; preserve orientation/shape
+        # from source blockstate when possible.
+        with_props = _apply_source_properties(name, _as_base_blockstate(direct_name))
+        return _sanitize_mapped_target(with_props, allowed_targets)
     base, _props = _split_blockstate(name)
     mapped_base = mapping.get(base)
     if mapped_base:
         mapped_name, mapped_props = _split_blockstate(mapped_base)
         if mapped_props:
             return _sanitize_mapped_target(mapped_base, allowed_targets)
-        # FAWE can return null block states when legacy/newer properties are kept on
-        # a base-only mapping (e.g. old property names that no longer exist). If the
-        # mapping does not explicitly define a full blockstate, always emit only the
-        # target base block id.
-        return _sanitize_mapped_target(_as_base_blockstate(mapped_name), allowed_targets)
+        # If mapping only specifies target base id, preserve important geometric
+        # properties from source (stairs/slabs/doors/...)
+        # to avoid rotated/wrong-shape replacements after downgrade.
+        with_props = _apply_source_properties(name, _as_base_blockstate(mapped_name))
+        return _sanitize_mapped_target(with_props, allowed_targets)
     
     # Fallback: try to find similar block in allowed_targets
     if allowed_targets:
@@ -217,6 +319,23 @@ def _find_similar_block(source: str, allowed_targets: set[str]) -> str | None:
     """Find a similar block in allowed_targets using category and color-based matching."""
     # Use the gradient-based matching system from block_gradients
     return find_best_block_match(source, allowed_targets)
+
+
+def _facing_to_rotation(facing: str) -> str:
+    # Minecraft sign rotation values for cardinal directions.
+    facing_clean = (facing or "").strip().lower()
+    mapping = {
+        "south": "0",
+        "west": "4",
+        "north": "8",
+        "east": "12",
+    }
+    if facing_clean in mapping:
+        return mapping[facing_clean]
+    # Some files carry numeric rotation even on non-sign blocks.
+    if facing_clean.isdigit():
+        return str(int(facing_clean) % 16)
+    return "8"
 
 
 def _apply_source_properties(source: str, target: str) -> str:
@@ -258,6 +377,32 @@ def _apply_source_properties(source: str, target: str) -> str:
             result_props["type"] = source_props["type"]
         else:
             result_props["type"] = "bottom"
+        if "waterlogged" in source_props:
+            result_props["waterlogged"] = source_props["waterlogged"]
+
+    # Sign-specific properties (important for correct orientation when replacing trapdoors/hatches etc.)
+    elif target_base.endswith("_wall_sign"):
+        if "facing" in source_props:
+            result_props["facing"] = source_props["facing"]
+        elif "rotation" in source_props:
+            try:
+                rot = int(source_props["rotation"]) % 16
+                nearest = min((0, "south"), (4, "west"), (8, "north"), (12, "east"), key=lambda item: min((rot - item[0]) % 16, (item[0] - rot) % 16))
+                result_props["facing"] = nearest[1]
+            except ValueError:
+                result_props["facing"] = "north"
+        else:
+            result_props["facing"] = "north"
+        if "waterlogged" in source_props:
+            result_props["waterlogged"] = source_props["waterlogged"]
+
+    elif target_base.endswith("_sign"):
+        if "rotation" in source_props:
+            result_props["rotation"] = source_props["rotation"]
+        elif "facing" in source_props:
+            result_props["rotation"] = _facing_to_rotation(source_props["facing"])
+        else:
+            result_props["rotation"] = "8"
         if "waterlogged" in source_props:
             result_props["waterlogged"] = source_props["waterlogged"]
 
@@ -309,6 +454,32 @@ def _apply_source_properties(source: str, target: str) -> str:
             result_props["in_wall"] = source_props["in_wall"]
         else:
             result_props["in_wall"] = "false"
+        if "powered" in source_props:
+            result_props["powered"] = source_props["powered"]
+
+    # Fence-specific connection properties
+    elif target_base.endswith("_fence"):
+        for side in ("north", "south", "east", "west"):
+            if side in source_props:
+                result_props[side] = source_props[side]
+        if "waterlogged" in source_props:
+            result_props["waterlogged"] = source_props["waterlogged"]
+
+    # Wall-specific connection properties
+    elif target_base.endswith("_wall"):
+        for key in ("up", "north", "south", "east", "west"):
+            if key in source_props:
+                result_props[key] = source_props[key]
+        if "waterlogged" in source_props:
+            result_props["waterlogged"] = source_props["waterlogged"]
+
+    # Glass pane/iron bars style connection properties
+    elif target_base.endswith("_pane") or target_base.endswith("iron_bars"):
+        for side in ("north", "south", "east", "west"):
+            if side in source_props:
+                result_props[side] = source_props[side]
+        if "waterlogged" in source_props:
+            result_props["waterlogged"] = source_props["waterlogged"]
 
     # Button/pressure plate properties
     elif "button" in target_base or "pressure_plate" in target_base:
@@ -335,7 +506,10 @@ def _apply_source_properties(source: str, target: str) -> str:
 def _resolve_smart_target(name: str, mapping: dict[str, dict], allowed_targets: set[str] | None = None) -> dict:
     direct = mapping.get(name)
     if isinstance(direct, dict):
-        target = _sanitize_mapped_target(str(direct.get("target", "minecraft:air")), allowed_targets)
+        raw_target = str(direct.get("target", "minecraft:air"))
+        target_base, target_props = _split_blockstate(raw_target)
+        target_candidate = raw_target if target_props else _apply_source_properties(name, _as_base_blockstate(target_base))
+        target = _sanitize_mapped_target(target_candidate, allowed_targets)
         return {
             "target": target,
             "reason": direct.get("reason", "direct"),
@@ -349,7 +523,7 @@ def _resolve_smart_target(name: str, mapping: dict[str, dict], allowed_targets: 
         mapped_target = str(mapped_base.get("target", base))
         mapped_name, mapped_props = _split_blockstate(mapped_target)
         if not mapped_props:
-            mapped_target = _as_base_blockstate(mapped_name)
+            mapped_target = _apply_source_properties(name, _as_base_blockstate(mapped_name))
         mapped_target = _sanitize_mapped_target(mapped_target, allowed_targets)
         return {
             "target": mapped_target,

@@ -56,14 +56,14 @@ def cmd_build_mapping(args: argparse.Namespace) -> None:
         total = len(mapping)
         changed = sum(1 for v in mapping.values() if v["changed"])
         high_conf = sum(1 for v in mapping.values() if v["changed"] and v["confidence"] >= 0.8)
-        low_conf = sum(1 for v in mapping.values() if v["changed"] and v["confidence"] < 0.5)
+        low_conf = sum(1 for v in mapping.values() if v["changed"] and v["confidence"] < 0.3)
 
         print("Smart mapping created:")
         print(f"  Total blocks: {total}")
         print(f"  Exact matches: {total - changed}")
         print(f"  Replaced: {changed}")
         print(f"  High confidence (≥80%): {high_conf}")
-        print(f"  Low confidence (<50%): {low_conf}")
+        print(f"  Very low confidence (<30%): {low_conf}")
 
         if low_conf > 0:
             print(f"  ⚠️ WARNING: {low_conf} replacements have low confidence!")
