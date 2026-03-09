@@ -1767,26 +1767,32 @@ class SchemconApp(ttk.Frame):
                         x = i // (length * height)
                     return x, y, z
 
-                def score(layout: str) -> int:
+                def score(layout: str) -> tuple[int, int, int, int]:
                     step = max(1, total // 18000)
-                    occupied: set[tuple[int, int, int]] = set()
+                    occupied: dict[tuple[int, int, int], str] = {}
                     for i in range(0, total, step):
                         x, y, z = to_xyz(i, layout)
                         pid = palette_ids[i] if i < len(palette_ids) else 0
                         state = id_to_block.get(pid, "minecraft:air")
                         if self._normalize_block(state) != "minecraft:air":
-                            occupied.add((x, y, z))
+                            occupied[(x, y, z)] = self._normalize_block(state)
                     if not occupied:
-                        return -1
-                    acc = 0
+                        return (-1, -1, -1, -1)
+                    total_links = 0
+                    same_links = 0
+                    exposed_faces = 0
                     for x, y, z in occupied:
-                        if (x + 1, y, z) in occupied:
-                            acc += 1
-                        if (x, y + 1, z) in occupied:
-                            acc += 1
-                        if (x, y, z + 1) in occupied:
-                            acc += 1
-                    return acc
+                        for dx, dy, dz in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+                            nb = (x + dx, y + dy, z + dz)
+                            if nb in occupied:
+                                total_links += 1
+                                if occupied[nb] == occupied[(x, y, z)]:
+                                    same_links += 1
+                        for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+                            if (x + dx, y + dy, z + dz) not in occupied:
+                                exposed_faces += 1
+                    # Prefer tighter connected layouts and same-block adjacency to avoid random scatter.
+                    return (same_links, total_links, -exposed_faces, len(occupied))
 
                 best = max(layouts, key=score)
                 return best
@@ -1811,9 +1817,11 @@ class SchemconApp(ttk.Frame):
                 id_to_block: dict[int, str],
                 palette_ids: list[int],
                 offset: tuple[int, int, int] = (0, 0, 0),
-            ) -> None:
+                out: list[dict[str, Any]] | None = None,
+            ) -> list[dict[str, Any]]:
                 layout = choose_index_layout(width, height, length, id_to_block, palette_ids)
                 ox, oy, oz = offset
+                dest = self._voxel_preview_data if out is None else out
                 for y in range(height):
                     for z in range(length):
                         for x in range(width):
@@ -1826,7 +1834,7 @@ class SchemconApp(ttk.Frame):
                             target = meta.get("target", state)
                             changed = self._normalize_block(state) != self._normalize_block(target)
                             traits = categorize_block(state)
-                            self._voxel_preview_data.append(
+                            dest.append(
                                 {
                                     "x": ox + x,
                                     "y": oy + y,
@@ -1838,6 +1846,51 @@ class SchemconApp(ttk.Frame):
                                     "color": preview_color_for_state(state),
                                 }
                             )
+                return dest
+
+            def refine_voxel_topology(voxels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                if not voxels:
+                    return []
+
+                coord_to_voxel = {(v["x"], v["y"], v["z"]): v for v in voxels}
+                remaining = set(coord_to_voxel.keys())
+                components: list[list[tuple[int, int, int]]] = []
+
+                while remaining:
+                    seed = remaining.pop()
+                    stack = [seed]
+                    comp = [seed]
+                    while stack:
+                        x, y, z = stack.pop()
+                        for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+                            nb = (x + dx, y + dy, z + dz)
+                            if nb in remaining:
+                                remaining.remove(nb)
+                                stack.append(nb)
+                                comp.append(nb)
+                    components.append(comp)
+
+                components.sort(key=len, reverse=True)
+                largest = len(components[0])
+                min_component = max(12, largest // 10)
+                kept = [coord for comp in components if len(comp) >= min_component for coord in comp]
+                if not kept:
+                    kept = components[0]
+                kept_set = set(kept)
+
+                shell_coords = [
+                    c
+                    for c in kept
+                    if any(
+                        (c[0] + dx, c[1] + dy, c[2] + dz) not in kept_set
+                        for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+                    )
+                ]
+                # Keep air-contact shell to make assembly easier and avoid fully solid noise.
+                if len(shell_coords) >= max(24, len(kept) // 8):
+                    kept = shell_coords
+
+                return [coord_to_voxel[c] for c in kept if c in coord_to_voxel]
 
             def candidate_score(voxels: list[dict[str, Any]]) -> tuple[int, int, int, int, int]:
                 if not voxels:
@@ -1923,11 +1976,12 @@ class SchemconApp(ttk.Frame):
                                             "color": preview_color_for_state(state),
                                         }
                                     )
-                        score = candidate_score(local_voxels)
-                        self._log(f"3D root decoder candidate {decode_name}: score={score}, blocks={len(local_voxels)}")
+                        refined_voxels = refine_voxel_topology(local_voxels)
+                        score = candidate_score(refined_voxels)
+                        self._log(f"3D root decoder candidate {decode_name}: score={score}, blocks={len(local_voxels)} -> refined={len(refined_voxels)}")
                         if score > best_root_score:
                             best_root_score = score
-                            best_root_voxels = local_voxels
+                            best_root_voxels = refined_voxels
                             self._log(f"3D root decoder selected: {decode_name} (source={'Blocks.Data' if hasattr(blocks_payload, 'get') and blocks_payload.get('Data') is not None else 'BlockData'})")
                 except Exception:
                     continue
@@ -2016,10 +2070,11 @@ class SchemconApp(ttk.Frame):
                                         "color": preview_color_for_state(state),
                                     }
                                 )
-                    score = candidate_score(local_voxels)
+                    refined_voxels = refine_voxel_topology(local_voxels)
+                    score = candidate_score(refined_voxels)
                     if score > best_legacy_score:
                         best_legacy_score = score
-                        best_legacy_voxels = local_voxels
+                        best_legacy_voxels = refined_voxels
 
                 if best_legacy_voxels:
                     self._preview_source_mode = "legacy_schematic"
@@ -2063,7 +2118,9 @@ class SchemconApp(ttk.Frame):
                         oy = int(pos.get("y", 0)) if pos is not None else 0
                         oz = int(pos.get("z", 0)) if pos is not None else 0
                         ids = decode_palette_ids_from_longs(sx, sy, sz, max(1, len(state_by_id)), [int(v) for v in packed])
-                        emit_voxels(sx, sy, sz, state_by_id, ids, offset=(ox, oy, oz))
+                        region_voxels: list[dict[str, Any]] = []
+                        emit_voxels(sx, sy, sz, state_by_id, ids, offset=(ox, oy, oz), out=region_voxels)
+                        self._voxel_preview_data.extend(refine_voxel_topology(region_voxels))
                         region_count += 1
                 if region_count:
                     self._preview_source_mode = "regions"
