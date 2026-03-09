@@ -1690,18 +1690,18 @@ class SchemconApp(ttk.Frame):
                     if bad <= max(1, total // 200):
                         decoded.append(("direct", direct_ids))
 
-                # Long-array packed path (common in region-packed data).
-                if looks_like_longs and raw_values:
+                # Long-array packed path (rare in root BlockData, but possible in non-standard writers).
+                if looks_like_longs and raw_values and len(raw_values) <= max(2, total // 2):
                     decoded.append(("packed_longs", decode_packed_longs(raw_values)))
 
-                # Use version-aware defaults to avoid random line/noise artifacts.
+                # Sponge/WE root BlockData is varint-like sequence; keep packed byte decoders disabled
+                # here because they frequently create line/noise artifacts and wrong geometry.
+                decoded.append(("varint", decode_varints(raw_bytes)))
+
+                # Last-resort packed-byte decoders for unknown/legacy roots only.
                 if version_hint is not None and version_hint <= 2:
-                    decoded.append(("varint", decode_varints(raw_bytes)))
-                else:
                     decoded.append(("packed_be", decode_packed(raw_bytes, "big")))
                     decoded.append(("packed_le", decode_packed(raw_bytes, "little")))
-                    # keep varint as fallback for non-standard writers
-                    decoded.append(("varint", decode_varints(raw_bytes)))
 
                 ranked: list[tuple[tuple[float, float, int], str, list[int]]] = []
                 for name, ids in decoded:
@@ -1819,14 +1819,15 @@ class SchemconApp(ttk.Frame):
                 palette_ids: list[int],
                 offset: tuple[int, int, int] = (0, 0, 0),
                 out: list[dict[str, Any]] | None = None,
+                layout: str | None = None,
             ) -> list[dict[str, Any]]:
-                layout = choose_index_layout(width, height, length, id_to_block, palette_ids)
+                resolved_layout = layout or choose_index_layout(width, height, length, id_to_block, palette_ids)
                 ox, oy, oz = offset
                 dest = self._voxel_preview_data if out is None else out
                 for y in range(height):
                     for z in range(length):
                         for x in range(width):
-                            idx = index_for_layout(x, y, z, width, height, length, layout)
+                            idx = index_for_layout(x, y, z, width, height, length, resolved_layout)
                             palette_id = palette_ids[idx] if idx < len(palette_ids) else 0
                             state = id_to_block.get(palette_id, "minecraft:air")
                             if self._normalize_block(state) == "minecraft:air":
@@ -2120,7 +2121,8 @@ class SchemconApp(ttk.Frame):
                         oz = int(pos.get("z", 0)) if pos is not None else 0
                         ids = decode_palette_ids_from_longs(sx, sy, sz, max(1, len(state_by_id)), [int(v) for v in packed])
                         region_voxels: list[dict[str, Any]] = []
-                        emit_voxels(sx, sy, sz, state_by_id, ids, offset=(ox, oy, oz), out=region_voxels)
+                        # Litematic region order is x + z*X + y*X*Z (xzy).
+                        emit_voxels(sx, sy, sz, state_by_id, ids, offset=(ox, oy, oz), out=region_voxels, layout="xzy")
                         self._voxel_preview_data.extend(refine_voxel_topology(region_voxels))
                         region_count += 1
                 if region_count:
