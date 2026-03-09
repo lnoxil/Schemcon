@@ -1590,7 +1590,7 @@ class SchemconApp(ttk.Frame):
                     return []
 
                 raw_bytes = bytes((int(v) & 0xFF) for v in block_data)
-                palette_size = max(1, len(id_to_block))
+                palette_size = max(1, max(id_to_block.keys(), default=0) + 1)
 
                 def decode_varints(payload: bytes) -> list[int]:
                     ids: list[int] = []
@@ -1684,27 +1684,48 @@ class SchemconApp(ttk.Frame):
                 if total <= 0:
                     return "xzy"
 
+                layouts = ("xzy", "xyz", "yzx", "yxz", "zxy", "zyx")
+
+                def to_xyz(i: int, layout: str) -> tuple[int, int, int]:
+                    if layout == "xzy":
+                        x = i % width
+                        z = (i // width) % length
+                        y = i // (width * length)
+                    elif layout == "xyz":
+                        x = i % width
+                        y = (i // width) % height
+                        z = i // (width * height)
+                    elif layout == "yzx":
+                        y = i % height
+                        z = (i // height) % length
+                        x = i // (height * length)
+                    elif layout == "yxz":
+                        y = i % height
+                        x = (i // height) % width
+                        z = i // (height * width)
+                    elif layout == "zxy":
+                        z = i % length
+                        x = (i // length) % width
+                        y = i // (length * width)
+                    else:  # zyx
+                        z = i % length
+                        y = (i // length) % height
+                        x = i // (length * height)
+                    return x, y, z
+
                 def score(layout: str) -> int:
-                    step = max(1, total // 12000)
+                    step = max(1, total // 18000)
                     occupied: set[tuple[int, int, int]] = set()
                     for i in range(0, total, step):
-                        if layout == "xzy":
-                            x = i % width
-                            z = (i // width) % length
-                            y = i // (width * length)
-                        else:  # xyz
-                            x = i % width
-                            y = (i // width) % height
-                            z = i // (width * height)
+                        x, y, z = to_xyz(i, layout)
                         pid = palette_ids[i] if i < len(palette_ids) else 0
                         state = id_to_block.get(pid, "minecraft:air")
                         if self._normalize_block(state) != "minecraft:air":
                             occupied.add((x, y, z))
-                    points = list(occupied)
-                    if not points:
-                        return 0
+                    if not occupied:
+                        return -1
                     acc = 0
-                    for x, y, z in points:
+                    for x, y, z in occupied:
                         if (x + 1, y, z) in occupied:
                             acc += 1
                         if (x, y + 1, z) in occupied:
@@ -1713,9 +1734,21 @@ class SchemconApp(ttk.Frame):
                             acc += 1
                     return acc
 
-                xzy = score("xzy")
-                xyz = score("xyz")
-                return "xzy" if xzy >= xyz else "xyz"
+                best = max(layouts, key=score)
+                return best
+
+            def index_for_layout(x: int, y: int, z: int, width: int, height: int, length: int, layout: str) -> int:
+                if layout == "xzy":
+                    return x + z * width + y * width * length
+                if layout == "xyz":
+                    return x + y * width + z * width * height
+                if layout == "yzx":
+                    return y + z * height + x * height * length
+                if layout == "yxz":
+                    return y + x * height + z * height * width
+                if layout == "zxy":
+                    return z + x * length + y * length * width
+                return z + y * length + x * length * height
 
             def emit_voxels(
                 width: int,
@@ -1730,10 +1763,7 @@ class SchemconApp(ttk.Frame):
                 for y in range(height):
                     for z in range(length):
                         for x in range(width):
-                            if layout == "xzy":
-                                idx = x + z * width + y * width * length
-                            else:
-                                idx = x + y * width + z * width * height
+                            idx = index_for_layout(x, y, z, width, height, length, layout)
                             palette_id = palette_ids[idx] if idx < len(palette_ids) else 0
                             state = id_to_block.get(palette_id, "minecraft:air")
                             if self._normalize_block(state) == "minecraft:air":
