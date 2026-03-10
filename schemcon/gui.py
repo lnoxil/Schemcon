@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import pathlib
 import re
 import shutil
@@ -28,7 +29,7 @@ from .registry import (
     load_registry,
     resolve_version_info,
 )
-from .schem import export_fawe_compatible, export_worldedit_legacy_schematic, load_schematic, save_schematic
+from .schem import _build_sponge_from_regions, export_fawe_compatible, export_worldedit_legacy_schematic, load_schematic, save_schematic
 
 
 class SchemconApp(ttk.Frame):
@@ -57,6 +58,11 @@ class SchemconApp(ttk.Frame):
         self._pair_icon_cache: dict[str, tk.PhotoImage] = {}
         self._group_children: dict[str, list[dict[str, str]]] = {}
         self._multi_target_versions: set[str] = set()
+        self._active_shape_filter = "all"
+        self._voxel_preview_data: list[dict[str, Any]] = []
+        self._preview_source_mode = "none"
+        self._preview_max_voxels = 180000
+        self._preview_shell_preserve = True
 
         self._build_style()
         self._build_layout()
@@ -105,8 +111,9 @@ class SchemconApp(ttk.Frame):
         )
         style.map("Primary.TButton", background=[("active", accent_hover), ("pressed", accent_hover)])
         style.configure("Secondary.TButton", font=("Segoe UI", 9), padding=(8, 5))
+        style.configure("Chip.TButton", font=("Segoe UI", 8, "bold"), padding=(6, 3))
 
-        style.configure("Mapping.Treeview", rowheight=22, font=("Segoe UI", 9), fieldbackground="white", background="white")
+        style.configure("Mapping.Treeview", rowheight=24, font=("Segoe UI", 9), fieldbackground="white", background="white")
         style.configure("Mapping.Treeview.Heading", font=("Segoe UI", 9, "bold"), padding=(4, 4))
 
     def _build_layout(self) -> None:
@@ -219,18 +226,25 @@ class SchemconApp(ttk.Frame):
 
         ttk.Button(
             form,
+            text="Открыть 3D mapping-просмотр",
+            style="Secondary.TButton",
+            command=self._open_3d_mapper,
+        ).grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 6))
+
+        ttk.Button(
+            form,
             text="3) Batch: автоконвертация в отмеченные версии",
             style="Secondary.TButton",
             command=self._batch_convert_selected_versions,
-        ).grid(row=7, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        ).grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
 
-        ttk.Separator(form, orient="horizontal").grid(row=8, column=0, columnspan=3, sticky="ew", padx=8, pady=(2, 6))
+        ttk.Separator(form, orient="horizontal").grid(row=9, column=0, columnspan=3, sticky="ew", padx=8, pady=(2, 6))
         ttk.Label(form, text="Конвертация формата схемы (.schem -> .schematic для старых версий)", background="#ffffff").grid(
-            row=9, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4)
+            row=10, column=0, columnspan=3, sticky="w", padx=8, pady=(0, 4)
         )
 
         format_row = ttk.Frame(form)
-        format_row.grid(row=10, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
+        format_row.grid(row=11, column=0, columnspan=3, sticky="ew", padx=8, pady=(0, 8))
         format_row.columnconfigure(1, weight=1)
 
         ttk.Label(format_row, text="Вход").grid(row=0, column=0, sticky="w")
@@ -266,16 +280,43 @@ class SchemconApp(ttk.Frame):
         top_controls.columnconfigure(0, weight=1)
 
         self.filter_var = tk.StringVar()
+        self.group_filter_var = tk.StringVar(value="Все группы")
+        self.quick_target_var = tk.StringVar()
         filter_entry = ttk.Entry(top_controls, textvariable=self.filter_var)
         filter_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         filter_entry.bind("<KeyRelease>", lambda _e: self._refresh_tree())
 
-        ttk.Button(top_controls, text="Изменить цель (выбранные блоки)", command=self._edit_selected_mapping, style="Secondary.TButton").grid(row=0, column=1, padx=(0, 8))
-        ttk.Button(top_controls, text="Изменить цель для группы", command=self._edit_selected_group_mapping, style="Secondary.TButton").grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(top_controls, text="Выделить все блоки", command=self._select_all_mapping_rows, style="Secondary.TButton").grid(row=0, column=3, padx=(0, 8))
-        ttk.Button(top_controls, text="Экспорт лога цветов", command=self._export_color_log, style="Secondary.TButton").grid(row=0, column=4)
+        self.group_filter_combo = ttk.Combobox(
+            top_controls,
+            textvariable=self.group_filter_var,
+            state="readonly",
+            width=20,
+            values=("Все группы",),
+        )
+        self.group_filter_combo.grid(row=0, column=1, padx=(0, 8))
+        self.group_filter_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_tree())
 
-        cols = ("source", "target", "reason", "src_props", "dst_props")
+        self.quick_target_combo = ttk.Combobox(top_controls, textvariable=self.quick_target_var, width=34)
+        self.quick_target_combo.grid(row=0, column=2, padx=(0, 8))
+        self.quick_target_combo.bind("<Return>", lambda _e: self._apply_quick_target_to_selected())
+
+        ttk.Button(top_controls, text="Применить цель к выделению", command=self._apply_quick_target_to_selected, style="Secondary.TButton").grid(row=0, column=3, padx=(0, 8))
+        ttk.Button(top_controls, text="Применить цель к группе", command=self._apply_quick_target_to_group, style="Secondary.TButton").grid(row=0, column=4, padx=(0, 8))
+
+        chips = ttk.Frame(preview)
+        chips.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 2))
+        ttk.Label(chips, text="Форма:").pack(side="left", padx=(0, 6))
+        for shape, title in [("all", "Все"), ("full", "Полные"), ("stairs", "Лестницы"), ("slab", "Плиты"), ("wall", "Стены"), ("other", "Прочее")]:
+            ttk.Button(chips, text=title, style="Chip.TButton", command=lambda s=shape: self._set_shape_filter(s)).pack(side="left", padx=(0, 4))
+
+        actions = ttk.Frame(preview)
+        actions.grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 4))
+        ttk.Button(actions, text="Изменить цель (выбранные блоки)", command=self._edit_selected_mapping, style="Secondary.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Изменить цель для группы", command=self._edit_selected_group_mapping, style="Secondary.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Выделить все блоки", command=self._select_all_mapping_rows, style="Secondary.TButton").pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Экспорт лога цветов", command=self._export_color_log, style="Secondary.TButton").pack(side="left")
+
+        cols = ("source", "target", "reason", "group", "src_props", "dst_props")
         self.tree = ttk.Treeview(preview, columns=cols, show="tree headings", height=16, style="Mapping.Treeview", selectmode="extended")
         self.tree.heading("#0", text="Текстуры src|dst")
         self.tree.column("#0", width=130, anchor="center")
@@ -283,22 +324,24 @@ class SchemconApp(ttk.Frame):
         self.tree.heading("source", text="Исходный тег")
         self.tree.heading("target", text="Тег замены")
         self.tree.heading("reason", text="Причина")
+        self.tree.heading("group", text="Группа")
         self.tree.heading("src_props", text="Свойства исходного")
         self.tree.heading("dst_props", text="Свойства замены")
         self.tree.column("source", width=320)
         self.tree.column("target", width=320)
         self.tree.column("reason", width=150, anchor="center")
+        self.tree.column("group", width=170)
         self.tree.column("src_props", width=240)
         self.tree.column("dst_props", width=240)
 
-        self.tree.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=8)
+        self.tree.grid(row=3, column=0, sticky="nsew", padx=(8, 0), pady=8)
         self.tree.bind("<Control-a>", self._select_all_mapping_rows)
         self.tree.tag_configure("changed", background="#fff5cc")
         self.tree.tag_configure("group", background="#dde9f7")
 
         ybar = ttk.Scrollbar(preview, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=ybar.set)
-        ybar.grid(row=1, column=1, sticky="ns", padx=(0, 8), pady=8)
+        ybar.grid(row=3, column=1, sticky="ns", padx=(0, 8), pady=8)
 
         log_frame = ttk.LabelFrame(self, text="Системный лог", style="Panel.TLabelframe")
         log_frame.grid(row=4, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -785,7 +828,12 @@ class SchemconApp(ttk.Frame):
                     }
                 )
             self._refresh_tree()
+            self._update_target_picker_choices()
+            self._update_group_filter_choices()
+            self._voxel_preview_data = []
+            self._preview_source_mode = "none"
             self._log(f"Реальных замен: {len(self._mapping_rows)}")
+            self._log("3D preview теперь строится по требованию (кнопка открыть 3D), чтобы не подвешивать шаг построения mapping.")
             messagebox.showinfo("Mapping готов", "Показаны только реальные замены, сгруппированные по типам.")
         except Exception as exc:  # noqa: BLE001
             self._log(f"Ошибка: {exc}")
@@ -1351,12 +1399,17 @@ class SchemconApp(ttk.Frame):
 
     def _refresh_tree(self) -> None:
         query = self.filter_var.get().strip().lower()
+        group_filter = self.group_filter_var.get().strip()
         for item in self.tree.get_children():
             self.tree.delete(item)
 
         grouped: dict[str, list[dict[str, str]]] = {}
         for row in self._mapping_rows:
             if query and query not in row["source"].lower() and query not in row["target"].lower() and query not in row.get("group", "").lower():
+                continue
+            if group_filter and group_filter != "Все группы" and row.get("group", "") != group_filter:
+                continue
+            if not self._row_matches_shape_filter(row):
                 continue
             grouped.setdefault(row.get("group", "прочее"), []).append(row)
 
@@ -1366,7 +1419,7 @@ class SchemconApp(ttk.Frame):
                 "",
                 tk.END,
                 text=f"{group_name} ({len(rows)})",
-                values=("", "", "group", "", ""),
+                values=("", "", "group", group_name, "", ""),
                 tags=("group",),
                 open=True,
             )
@@ -1385,11 +1438,1059 @@ class SchemconApp(ttk.Frame):
                         row["source"],
                         row["target"],
                         row["reason"],
+                        row["group"],
                         row["src_props"],
                         row["dst_props"],
                     ),
                     tags=("changed",),
                 )
+
+    def _set_shape_filter(self, shape: str) -> None:
+        self._active_shape_filter = shape
+        self._refresh_tree()
+
+    def _row_matches_shape_filter(self, row: dict[str, str]) -> bool:
+        if self._active_shape_filter == "all":
+            return True
+        shape = row.get("group", "").split("/", 1)[-1]
+        if self._active_shape_filter == "other":
+            return shape not in {"full", "stairs", "slab", "wall"}
+        return shape == self._active_shape_filter
+
+    def _update_target_picker_choices(self) -> None:
+        normalized = sorted(self._normalize_block(item) for item in self._current_target_blocks)
+        if not normalized:
+            return
+        self.quick_target_combo.configure(values=normalized)
+
+    def _update_group_filter_choices(self) -> None:
+        values = ["Все группы"] + sorted({row.get("group", "прочее") for row in self._mapping_rows})
+        self.group_filter_combo.configure(values=values)
+        if self.group_filter_var.get() not in values:
+            self.group_filter_var.set("Все группы")
+
+    def _validated_target_from_picker(self) -> str | None:
+        value = self.quick_target_var.get().strip()
+        if not value:
+            messagebox.showwarning("Нет цели", "Введите или выберите целевой блок в поле быстрого применения.")
+            return None
+        if ":" not in value:
+            value = f"minecraft:{value}"
+        base_target = self._normalize_block(value)
+        base_target_bare = base_target.replace("minecraft:", "")
+        if base_target not in self._current_target_blocks and base_target_bare not in self._current_target_blocks:
+            messagebox.showerror("Некорректная цель", f"Блок отсутствует в target версии: {base_target}")
+            return None
+        self.quick_target_var.set(base_target)
+        return base_target
+
+    def _apply_quick_target_to_selected(self) -> None:
+        target = self._validated_target_from_picker()
+        if not target:
+            return
+        leaf_items = self._selected_leaf_items()
+        if not leaf_items:
+            messagebox.showwarning("Нет выбора", "Выберите блоки для замены.")
+            return
+        rows_by_source = {row["source"]: row for row in self._mapping_rows}
+        changed = 0
+        for item in leaf_items:
+            values = self.tree.item(item, "values")
+            if not values:
+                continue
+            source = values[0]
+            if source not in self._pending_mapping:
+                continue
+            self._pending_mapping[source]["target"] = target
+            self._pending_mapping[source]["reason"] = "quick_picker_override"
+            row = rows_by_source.get(source)
+            if row:
+                row["target"] = target
+                row["reason"] = "quick_picker_override"
+                row["dst_props"] = self._props(target)
+                row["dst_color"] = str(self._block_color(target))
+                changed += 1
+        self._refresh_tree()
+        self._log(f"Quick replace: {changed} блоков -> {target}")
+
+    def _apply_quick_target_to_group(self) -> None:
+        target = self._validated_target_from_picker()
+        if not target:
+            return
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Нет выбора", "Выберите группу в дереве mapping.")
+            return
+        group_item = selected[0]
+        if self.tree.parent(group_item) != "":
+            group_item = self.tree.parent(group_item)
+        rows = self._group_children.get(group_item, [])
+        if not rows:
+            messagebox.showwarning("Пустая группа", "В выбранной группе нет блоков.")
+            return
+        for row in rows:
+            source = row["source"]
+            if source not in self._pending_mapping:
+                continue
+            self._pending_mapping[source]["target"] = target
+            self._pending_mapping[source]["reason"] = "quick_group_override"
+            row["target"] = target
+            row["reason"] = "quick_group_override"
+            row["dst_props"] = self._props(target)
+            row["dst_color"] = str(self._block_color(target))
+        self._refresh_tree()
+        self._log(f"Quick group replace: {len(rows)} блоков -> {target}")
+
+    def _build_voxel_preview(self, schem_path: str, mapping: dict[str, dict[str, str]]) -> None:
+        self._voxel_preview_data = []
+        self._preview_source_mode = "none"
+        try:
+            schematic = load_schematic(schem_path)
+            root = schematic.root
+
+            # Normalize region-based schematics into sponge-like root when possible.
+            has_direct_root = all(root.get(k) is not None for k in ("Width", "Height", "Length", "Palette", "BlockData")) if hasattr(root, "get") else False
+            if not has_direct_root:
+                try:
+                    normalized = _build_sponge_from_regions(root, sponge_version=3)
+                    if normalized is not None:
+                        root = normalized
+                        self._log("3D preview: root normalized from Regions to Sponge format")
+                except Exception as exc:  # noqa: BLE001
+                    self._log(f"3D preview: normalize Regions skipped: {exc}")
+
+            preview_color_cache: dict[str, tuple[int, int, int]] = {}
+
+            def preview_color_for_state(state: str) -> tuple[int, int, int]:
+                cached = preview_color_cache.get(state)
+                if cached is not None:
+                    return cached
+                color = self._block_color(state)
+                if self._current_source_version:
+                    try:
+                        img = self._texture_icon(self._current_source_version, state)
+                        w = max(1, img.width())
+                        h = max(1, img.height())
+                        step_x = max(1, w // 4)
+                        step_y = max(1, h // 4)
+                        r_sum = g_sum = b_sum = count = 0
+                        for yy in range(0, h, step_y):
+                            for xx in range(0, w, step_x):
+                                px = img.get(xx, yy)
+                                if isinstance(px, tuple) and len(px) >= 3:
+                                    r, g, b = int(px[0]), int(px[1]), int(px[2])
+                                elif isinstance(px, str) and px.startswith('#') and len(px) >= 7:
+                                    r, g, b = int(px[1:3], 16), int(px[3:5], 16), int(px[5:7], 16)
+                                else:
+                                    continue
+                                r_sum += r
+                                g_sum += g
+                                b_sum += b
+                                count += 1
+                        if count > 0:
+                            color = (r_sum // count, g_sum // count, b_sum // count)
+                    except Exception:
+                        pass
+                preview_color_cache[state] = color
+                return color
+
+            def decode_palette_ids_from_root(
+                width: int,
+                height: int,
+                length: int,
+                id_to_block: dict[int, str],
+                block_data: Any,
+                version_hint: int | None = None,
+            ) -> list[tuple[str, list[int]]]:
+                total = width * height * length
+                if total <= 0:
+                    return []
+
+                raw_values = [int(v) for v in block_data]
+                raw_bytes = bytes((int(v) & 0xFF) for v in raw_values)
+                palette_size = max(1, max(id_to_block.keys(), default=0) + 1)
+
+                def decode_direct(values: list[int]) -> list[int]:
+                    ids = [max(0, int(v)) for v in values[:total]]
+                    if len(ids) < total:
+                        ids.extend([0] * (total - len(ids)))
+                    return ids
+
+                def decode_varints(payload: bytes) -> list[int]:
+                    ids: list[int] = []
+                    value = 0
+                    shift = 0
+                    for b in payload:
+                        value |= (b & 0x7F) << shift
+                        if (b & 0x80) == 0:
+                            ids.append(value)
+                            value = 0
+                            shift = 0
+                            if len(ids) >= total:
+                                break
+                        else:
+                            shift += 7
+                            if shift > 35:
+                                value = 0
+                                shift = 0
+                    if len(ids) < total:
+                        ids.extend([0] * (total - len(ids)))
+                    return ids[:total]
+
+                def decode_packed_longs(longs: list[int]) -> list[int]:
+                    bits = max(2, math.ceil(math.log2(palette_size)))
+                    mask = (1 << bits) - 1
+                    ids: list[int] = []
+                    for i in range(total):
+                        bit_index = i * bits
+                        long_index = bit_index // 64
+                        start_bit = bit_index % 64
+                        if long_index >= len(longs):
+                            ids.append(0)
+                            continue
+                        a = int(longs[long_index]) & ((1 << 64) - 1)
+                        value = (a >> start_bit) & mask
+                        overflow = (start_bit + bits) - 64
+                        if overflow > 0 and long_index + 1 < len(longs):
+                            b = int(longs[long_index + 1]) & ((1 << 64) - 1)
+                            value |= (b & ((1 << overflow) - 1)) << (bits - overflow)
+                        ids.append(value)
+                    return ids
+
+                def decode_packed(payload: bytes, byteorder: str) -> list[int]:
+                    longs: list[int] = []
+                    for i in range(0, len(payload), 8):
+                        chunk = payload[i:i + 8]
+                        if len(chunk) < 8:
+                            chunk = chunk + b"\x00" * (8 - len(chunk))
+                        longs.append(int.from_bytes(chunk, byteorder=byteorder, signed=True))
+                    return decode_packed_longs(longs)
+
+                def decode_quality(ids: list[int]) -> tuple[int, int, int]:
+                    step = max(1, total // 24000)
+                    occupied = 0
+                    in_range = 0
+                    sampled = 0
+                    for i in range(0, total, step):
+                        sampled += 1
+                        pid = ids[i] if i < len(ids) else 0
+                        if 0 <= pid < palette_size:
+                            in_range += 1
+                            if self._normalize_block(id_to_block.get(pid, "minecraft:air")) != "minecraft:air":
+                                occupied += 1
+                    return occupied, in_range, max(1, sampled)
+
+                decoded: list[tuple[str, list[int]]] = []
+                looks_like_longs = any(v > 255 or v < -128 for v in raw_values)
+
+                # Some producers store direct palette ids per block.
+                if len(raw_values) == total:
+                    direct_ids = decode_direct(raw_values)
+                    bad = sum(1 for v in direct_ids if v < 0 or v >= palette_size)
+                    if bad <= max(1, total // 200):
+                        decoded.append(("direct", direct_ids))
+
+                # Long-array packed path (rare in root BlockData, but possible in non-standard writers).
+                if looks_like_longs and raw_values and len(raw_values) <= max(2, total // 2):
+                    decoded.append(("packed_longs", decode_packed_longs(raw_values)))
+
+                # Sponge/WE root BlockData is varint-like sequence; keep packed byte decoders disabled
+                # here because they frequently create line/noise artifacts and wrong geometry.
+                decoded.append(("varint", decode_varints(raw_bytes)))
+
+                # Last-resort packed-byte decoders for unknown/legacy roots only.
+                if version_hint is not None and version_hint <= 2:
+                    decoded.append(("packed_be", decode_packed(raw_bytes, "big")))
+                    decoded.append(("packed_le", decode_packed(raw_bytes, "little")))
+
+                ranked: list[tuple[tuple[float, float, int], str, list[int]]] = []
+                for name, ids in decoded:
+                    occ, inr, smp = decode_quality(ids)
+                    ranked.append(((inr / smp, occ / smp, occ), name, ids))
+
+                ranked.sort(key=lambda item: item[0], reverse=True)
+                return [(name, ids) for _q, name, ids in ranked]
+
+            def decode_palette_ids_from_longs(width: int, height: int, length: int, palette_size: int, packed_longs: list[int]) -> list[int]:
+                total = width * height * length
+                if total <= 0:
+                    return []
+                bits = max(2, math.ceil(math.log2(max(1, palette_size))))
+                mask = (1 << bits) - 1
+                ids: list[int] = []
+                for i in range(total):
+                    bit_index = i * bits
+                    long_index = bit_index // 64
+                    start_bit = bit_index % 64
+                    if long_index >= len(packed_longs):
+                        ids.append(0)
+                        continue
+                    a = int(packed_longs[long_index]) & ((1 << 64) - 1)
+                    value = (a >> start_bit) & mask
+                    overflow = (start_bit + bits) - 64
+                    if overflow > 0 and long_index + 1 < len(packed_longs):
+                        b = int(packed_longs[long_index + 1]) & ((1 << 64) - 1)
+                        value |= (b & ((1 << overflow) - 1)) << (bits - overflow)
+                    ids.append(value)
+                return ids
+
+            def choose_index_layout(width: int, height: int, length: int, id_to_block: dict[int, str], palette_ids: list[int]) -> str:
+                total = width * height * length
+                if total <= 0:
+                    return "xzy"
+
+                layouts = ("xzy", "xyz", "yzx", "yxz", "zxy", "zyx")
+
+                def to_xyz(i: int, layout: str) -> tuple[int, int, int]:
+                    if layout == "xzy":
+                        x = i % width
+                        z = (i // width) % length
+                        y = i // (width * length)
+                    elif layout == "xyz":
+                        x = i % width
+                        y = (i // width) % height
+                        z = i // (width * height)
+                    elif layout == "yzx":
+                        y = i % height
+                        z = (i // height) % length
+                        x = i // (height * length)
+                    elif layout == "yxz":
+                        y = i % height
+                        x = (i // height) % width
+                        z = i // (height * width)
+                    elif layout == "zxy":
+                        z = i % length
+                        x = (i // length) % width
+                        y = i // (length * width)
+                    else:  # zyx
+                        z = i % length
+                        y = (i // length) % height
+                        x = i // (length * height)
+                    return x, y, z
+
+                def score(layout: str) -> tuple[int, int, int, int]:
+                    step = max(1, total // 18000)
+                    occupied: dict[tuple[int, int, int], str] = {}
+                    for i in range(0, total, step):
+                        x, y, z = to_xyz(i, layout)
+                        pid = palette_ids[i] if i < len(palette_ids) else 0
+                        state = id_to_block.get(pid, "minecraft:air")
+                        if self._normalize_block(state) != "minecraft:air":
+                            occupied[(x, y, z)] = self._normalize_block(state)
+                    if not occupied:
+                        return (-1, -1, -1, -1)
+                    total_links = 0
+                    same_links = 0
+                    exposed_faces = 0
+                    for x, y, z in occupied:
+                        for dx, dy, dz in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+                            nb = (x + dx, y + dy, z + dz)
+                            if nb in occupied:
+                                total_links += 1
+                                if occupied[nb] == occupied[(x, y, z)]:
+                                    same_links += 1
+                        for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+                            if (x + dx, y + dy, z + dz) not in occupied:
+                                exposed_faces += 1
+                    # Prefer tighter connected layouts and same-block adjacency to avoid random scatter.
+                    return (same_links, total_links, -exposed_faces, len(occupied))
+
+                best = max(layouts, key=score)
+                return best
+
+            def index_for_layout(x: int, y: int, z: int, width: int, height: int, length: int, layout: str) -> int:
+                if layout == "xzy":
+                    return x + z * width + y * width * length
+                if layout == "xyz":
+                    return x + y * width + z * width * height
+                if layout == "yzx":
+                    return y + z * height + x * height * length
+                if layout == "yxz":
+                    return y + x * height + z * height * width
+                if layout == "zxy":
+                    return z + x * length + y * length * width
+                return z + y * length + x * length * height
+
+            def emit_voxels(
+                width: int,
+                height: int,
+                length: int,
+                id_to_block: dict[int, str],
+                palette_ids: list[int],
+                offset: tuple[int, int, int] = (0, 0, 0),
+                out: list[dict[str, Any]] | None = None,
+                layout: str | None = None,
+            ) -> list[dict[str, Any]]:
+                resolved_layout = layout or choose_index_layout(width, height, length, id_to_block, palette_ids)
+                ox, oy, oz = offset
+                dest = self._voxel_preview_data if out is None else out
+                for y in range(height):
+                    for z in range(length):
+                        for x in range(width):
+                            idx = index_for_layout(x, y, z, width, height, length, resolved_layout)
+                            palette_id = palette_ids[idx] if idx < len(palette_ids) else 0
+                            state = id_to_block.get(palette_id, "minecraft:air")
+                            if self._normalize_block(state) == "minecraft:air":
+                                continue
+                            meta = mapping.get(state) or mapping.get(self._normalize_block(state)) or {}
+                            target = meta.get("target", state)
+                            changed = self._normalize_block(state) != self._normalize_block(target)
+                            traits = categorize_block(state)
+                            dest.append(
+                                {
+                                    "x": ox + x,
+                                    "y": oy + y,
+                                    "z": oz + z,
+                                    "source": state,
+                                    "target": target,
+                                    "shape": traits.shape,
+                                    "changed": changed,
+                                    "color": preview_color_for_state(state),
+                                }
+                            )
+                return dest
+
+            def refine_voxel_topology(voxels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                if not voxels:
+                    return []
+
+                coord_to_voxel = {(v["x"], v["y"], v["z"]): v for v in voxels}
+                remaining = set(coord_to_voxel.keys())
+                components: list[list[tuple[int, int, int]]] = []
+
+                while remaining:
+                    seed = remaining.pop()
+                    stack = [seed]
+                    comp = [seed]
+                    while stack:
+                        x, y, z = stack.pop()
+                        for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+                            nb = (x + dx, y + dy, z + dz)
+                            if nb in remaining:
+                                remaining.remove(nb)
+                                stack.append(nb)
+                                comp.append(nb)
+                    components.append(comp)
+
+                components.sort(key=len, reverse=True)
+                largest = len(components[0])
+                min_component = max(12, largest // 10)
+                kept = [coord for comp in components if len(comp) >= min_component for coord in comp]
+                if not kept:
+                    kept = components[0]
+                kept_set = set(kept)
+
+                shell_coords = [
+                    c
+                    for c in kept
+                    if any(
+                        (c[0] + dx, c[1] + dy, c[2] + dz) not in kept_set
+                        for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+                    )
+                ]
+                # Keep air-contact shell to make assembly easier and avoid fully solid noise.
+                if len(shell_coords) >= max(24, len(kept) // 8):
+                    kept = shell_coords
+
+                return [coord_to_voxel[c] for c in kept if c in coord_to_voxel]
+
+            def candidate_score(voxels: list[dict[str, Any]]) -> tuple[int, int, int, int, int]:
+                if not voxels:
+                    return (0, 0, 0, 0, 0)
+                xs = [v["x"] for v in voxels]
+                ys = [v["y"] for v in voxels]
+                zs = [v["z"] for v in voxels]
+                dx = max(xs) - min(xs) + 1
+                dy = max(ys) - min(ys) + 1
+                dz = max(zs) - min(zs) + 1
+                nontrivial_dims = int(dx > 1) + int(dy > 1) + int(dz > 1)
+                bbox_volume = max(1, dx * dy * dz)
+                density = len(voxels) / bbox_volume
+                density_scaled = int(density * 1000)
+
+                occupied = {(v["x"], v["y"], v["z"]) for v in voxels}
+                neighbor_links = 0
+                for x, y, z in occupied:
+                    if (x + 1, y, z) in occupied:
+                        neighbor_links += 1
+                    if (x, y + 1, z) in occupied:
+                        neighbor_links += 1
+                    if (x, y, z + 1) in occupied:
+                        neighbor_links += 1
+
+                link_scaled = int((neighbor_links * 1000) / max(1, len(occupied)))
+                # Reject pathological candidates: almost-empty lines or near-solid random noise.
+                plausible = int(nontrivial_dims >= 2 and 0.002 <= density <= 0.75 and link_scaled >= 2)
+                return (plausible, link_scaled, density_scaled, nontrivial_dims, len(voxels))
+
+            # Sponge/WE root format (search recursively; many files wrap data in nested compounds)
+            best_root_voxels: list[dict[str, Any]] = []
+            best_root_score: tuple[int, int, int, int, int] = (0, 0, 0, 0, 0)
+            for node in self._iter_compound_nodes(root):
+                if not hasattr(node, "get"):
+                    continue
+                width = int(node.get("Width", 0))
+                height = int(node.get("Height", 0))
+                length = int(node.get("Length", 0))
+                palette = node.get("Palette")
+                block_data = node.get("BlockData")
+
+                # Some 1.20+/1.21 schems store data in nested Blocks.Palette / Blocks.Data.
+                blocks_payload = node.get("Blocks")
+                if hasattr(blocks_payload, "get"):
+                    nested_palette = blocks_payload.get("Palette")
+                    nested_data = blocks_payload.get("Data")
+                    if nested_palette is not None and nested_data is not None:
+                        palette = nested_palette
+                        block_data = nested_data
+
+                if not (width and height and length and palette is not None and block_data is not None):
+                    continue
+                try:
+                    local_voxels = []
+                    id_to_block = {int(v): str(k) for k, v in palette.items()}
+                    version_hint = int(node.get("Version", 3)) if node.get("Version") is not None else None
+                    candidate_sets = decode_palette_ids_from_root(width, height, length, id_to_block, block_data, version_hint)
+                    for decode_name, ids in candidate_sets:
+                        local_voxels = []
+                        # Sponge index order: x + z*Width + y*Width*Length
+                        for y in range(height):
+                            for z in range(length):
+                                for x in range(width):
+                                    idx = x + z * width + y * width * length
+                                    palette_id = ids[idx] if idx < len(ids) else 0
+                                    state = id_to_block.get(palette_id, "minecraft:air")
+                                    if self._normalize_block(state) == "minecraft:air":
+                                        continue
+                                    meta = mapping.get(state) or mapping.get(self._normalize_block(state)) or {}
+                                    target = meta.get("target", state)
+                                    changed = self._normalize_block(state) != self._normalize_block(target)
+                                    traits = categorize_block(state)
+                                    local_voxels.append(
+                                        {
+                                            "x": x,
+                                            "y": y,
+                                            "z": z,
+                                            "source": state,
+                                            "target": target,
+                                            "shape": traits.shape,
+                                            "changed": changed,
+                                            "color": preview_color_for_state(state),
+                                        }
+                                    )
+                        refined_voxels = refine_voxel_topology(local_voxels)
+                        score = candidate_score(refined_voxels)
+                        self._log(f"3D root decoder candidate {decode_name}: score={score}, blocks={len(local_voxels)} -> refined={len(refined_voxels)}")
+                        if score > best_root_score:
+                            best_root_score = score
+                            best_root_voxels = refined_voxels
+                            self._log(f"3D root decoder selected: {decode_name} (source={'Blocks.Data' if hasattr(blocks_payload, 'get') and blocks_payload.get('Data') is not None else 'BlockData'})")
+                except Exception:
+                    continue
+
+            if best_root_voxels:
+                self._preview_source_mode = "sponge_root"
+                self._voxel_preview_data.extend(best_root_voxels)
+                xs = [v["x"] for v in best_root_voxels]
+                ys = [v["y"] for v in best_root_voxels]
+                zs = [v["z"] for v in best_root_voxels]
+                self._log(
+                    f"3D root candidate: blocks={len(best_root_voxels)}, size={max(xs)-min(xs)+1}x{max(ys)-min(ys)+1}x{max(zs)-min(zs)+1}, score={best_root_score}"
+                )
+
+            # Legacy .schematic (Blocks/Data[/AddBlocks]) fallback (also search recursively)
+            if not self._voxel_preview_data:
+                best_legacy_voxels: list[dict[str, Any]] = []
+                best_legacy_score: tuple[int, int, int, int, int] = (0, 0, 0, 0, 0)
+                for node in self._iter_compound_nodes(root):
+                    if not hasattr(node, "get"):
+                        continue
+                    if not all(node.get(k) is not None for k in ("Width", "Height", "Length", "Blocks")):
+                        continue
+                    lw = int(node.get("Width", 0))
+                    lh = int(node.get("Height", 0))
+                    ll = int(node.get("Length", 0))
+                    blocks = node.get("Blocks")
+                    add_blocks = node.get("AddBlocks")
+                    total = lw * lh * ll
+                    if not (lw > 0 and lh > 0 and ll > 0 and blocks is not None and total > 0):
+                        continue
+
+                    legacy_map = {
+                        0: "minecraft:air",
+                        1: "minecraft:stone",
+                        2: "minecraft:grass_block",
+                        3: "minecraft:dirt",
+                        4: "minecraft:cobblestone",
+                        5: "minecraft:oak_planks",
+                        12: "minecraft:sand",
+                        13: "minecraft:gravel",
+                        17: "minecraft:oak_log",
+                        20: "minecraft:glass",
+                        24: "minecraft:sandstone",
+                        35: "minecraft:white_wool",
+                        45: "minecraft:bricks",
+                        98: "minecraft:stone_bricks",
+                        155: "minecraft:quartz_block",
+                    }
+                    ids: list[int] = []
+                    add_values = [int(v) & 0xFF for v in add_blocks] if add_blocks is not None else []
+                    for i in range(min(total, len(blocks))):
+                        base = int(blocks[i]) & 0xFF
+                        extra = 0
+                        if add_values:
+                            nib = add_values[i // 2] if i // 2 < len(add_values) else 0
+                            extra = (nib & 0x0F) if (i % 2 == 0) else ((nib >> 4) & 0x0F)
+                        ids.append(base | (extra << 8))
+                    if len(ids) < total:
+                        ids.extend([0] * (total - len(ids)))
+
+                    id_to_block = {i: legacy_map.get(i, "minecraft:stone") for i in set(ids)}
+                    local_voxels: list[dict[str, Any]] = []
+                    # Legacy MCEdit index order: x + z*Width + y*Width*Length
+                    for y in range(lh):
+                        for z in range(ll):
+                            for x in range(lw):
+                                idx = x + z * lw + y * lw * ll
+                                palette_id = ids[idx] if idx < len(ids) else 0
+                                state = id_to_block.get(palette_id, "minecraft:air")
+                                if self._normalize_block(state) == "minecraft:air":
+                                    continue
+                                meta = mapping.get(state) or mapping.get(self._normalize_block(state)) or {}
+                                target = meta.get("target", state)
+                                changed = self._normalize_block(state) != self._normalize_block(target)
+                                traits = categorize_block(state)
+                                local_voxels.append(
+                                    {
+                                        "x": x,
+                                        "y": y,
+                                        "z": z,
+                                        "source": state,
+                                        "target": target,
+                                        "shape": traits.shape,
+                                        "changed": changed,
+                                        "color": preview_color_for_state(state),
+                                    }
+                                )
+                    refined_voxels = refine_voxel_topology(local_voxels)
+                    score = candidate_score(refined_voxels)
+                    if score > best_legacy_score:
+                        best_legacy_score = score
+                        best_legacy_voxels = refined_voxels
+
+                if best_legacy_voxels:
+                    self._preview_source_mode = "legacy_schematic"
+                    self._voxel_preview_data.extend(best_legacy_voxels)
+
+            # Litematic-like Regions fallback
+            if not self._voxel_preview_data:
+                region_count = 0
+                for node in self._iter_compound_nodes(root):
+                    regions = node.get("Regions") if hasattr(node, "get") else None
+                    if not hasattr(regions, "values"):
+                        continue
+                    for region in regions.values():
+                        if not hasattr(region, "get"):
+                            continue
+                        palette_list = region.get("BlockStatePalette")
+                        packed = region.get("BlockStates")
+                        size = region.get("Size")
+                        pos = region.get("Position")
+                        if not palette_list or packed is None or size is None:
+                            continue
+                        sx = abs(int(size.get("x", 0)))
+                        sy = abs(int(size.get("y", 0)))
+                        sz = abs(int(size.get("z", 0)))
+                        if sx <= 0 or sy <= 0 or sz <= 0:
+                            continue
+
+                        state_by_id: dict[int, str] = {}
+                        for idx, entry in enumerate(palette_list):
+                            if not hasattr(entry, "get"):
+                                continue
+                            name = str(entry.get("Name", "minecraft:air"))
+                            props = entry.get("Properties")
+                            if props and hasattr(props, "items"):
+                                pairs = [f"{str(k)}={str(v)}" for k, v in sorted(props.items())]
+                                state_by_id[idx] = f"{name}[{','.join(pairs)}]"
+                            else:
+                                state_by_id[idx] = name
+
+                        ox = int(pos.get("x", 0)) if pos is not None else 0
+                        oy = int(pos.get("y", 0)) if pos is not None else 0
+                        oz = int(pos.get("z", 0)) if pos is not None else 0
+                        ids = decode_palette_ids_from_longs(sx, sy, sz, max(1, len(state_by_id)), [int(v) for v in packed])
+                        region_voxels: list[dict[str, Any]] = []
+                        # Litematic region order is x + z*X + y*X*Z (xzy).
+                        emit_voxels(sx, sy, sz, state_by_id, ids, offset=(ox, oy, oz), out=region_voxels, layout="xzy")
+                        self._voxel_preview_data.extend(refine_voxel_topology(region_voxels))
+                        region_count += 1
+                if region_count:
+                    self._preview_source_mode = "regions"
+                    self._log(f"3D preview: загружены регионы {region_count}")
+
+            # Last-resort fallback: show changed mapping entries as a 3D catalog.
+            if not self._voxel_preview_data and self._mapping_rows:
+                for idx, row in enumerate(self._mapping_rows):
+                    x = idx % 32
+                    z = (idx // 32) % 32
+                    y = idx // (32 * 32)
+                    state = row["source"]
+                    traits = categorize_block(state)
+                    self._voxel_preview_data.append(
+                        {
+                            "x": x,
+                            "y": y,
+                            "z": z,
+                            "source": state,
+                            "target": row["target"],
+                            "shape": traits.shape,
+                            "changed": True,
+                            "color": preview_color_for_state(state),
+                        }
+                    )
+                self._preview_source_mode = "mapping_rows_fallback"
+                self._log("3D preview: используется каталог блоков (fallback), т.к. геометрия схемы недоступна.")
+
+            # Ultimate fallback: build preview from full pending mapping (not only changed rows).
+            if not self._voxel_preview_data and self._pending_mapping:
+                entries = [src for src in sorted(self._pending_mapping.keys()) if self._normalize_block(src) != "minecraft:air"]
+                for idx, state in enumerate(entries):
+                    x = idx % 48
+                    z = (idx // 48) % 48
+                    y = idx // (48 * 48)
+                    meta = self._pending_mapping.get(state, {})
+                    target = meta.get("target", state)
+                    traits = categorize_block(state)
+                    self._voxel_preview_data.append(
+                        {
+                            "x": x,
+                            "y": y,
+                            "z": z,
+                            "source": state,
+                            "target": target,
+                            "shape": traits.shape,
+                            "changed": self._normalize_block(state) != self._normalize_block(target),
+                            "color": preview_color_for_state(state),
+                        }
+                    )
+                if self._voxel_preview_data:
+                    self._preview_source_mode = "pending_mapping_fallback"
+                    self._log("3D preview: fallback из полной pending mapping (геометрия схемы не прочитана).")
+
+            if self._voxel_preview_data:
+                min_x = min(item["x"] for item in self._voxel_preview_data)
+                min_y = min(item["y"] for item in self._voxel_preview_data)
+                min_z = min(item["z"] for item in self._voxel_preview_data)
+                if min_x != 0 or min_y != 0 or min_z != 0:
+                    for item in self._voxel_preview_data:
+                        item["x"] -= min_x
+                        item["y"] -= min_y
+                        item["z"] -= min_z
+
+            if len(self._voxel_preview_data) > self._preview_max_voxels:
+                self._voxel_preview_data = self._reduce_voxels_for_preview(
+                    self._voxel_preview_data,
+                    self._preview_max_voxels,
+                    prefer_shell=self._preview_shell_preserve,
+                )
+
+            if self._voxel_preview_data:
+                self._log(f"3D preview: блоков для отображения {len(self._voxel_preview_data)}")
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"3D preview недоступен: {exc}")
+
+    def _reduce_voxels_for_preview(
+        self,
+        voxels: list[dict[str, Any]],
+        limit: int,
+        prefer_shell: bool = True,
+    ) -> list[dict[str, Any]]:
+        if len(voxels) <= limit:
+            return voxels
+
+        by_coord = {(int(v["x"]), int(v["y"]), int(v["z"])): v for v in voxels}
+        occupied = set(by_coord.keys())
+        xs = [c[0] for c in occupied]
+        ys = [c[1] for c in occupied]
+        zs = [c[2] for c in occupied]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        min_z, max_z = min(zs), max(zs)
+
+        shell: set[tuple[int, int, int]] = set()
+        for x, y, z in occupied:
+            if any(
+                (x + dx, y + dy, z + dz) not in occupied
+                for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+            ):
+                shell.add((x, y, z))
+
+        target_shell = min(len(shell), int(limit * 0.75)) if prefer_shell else min(len(shell), int(limit * 0.45))
+        target_inner = max(0, limit - target_shell)
+
+        sx = max(1, max_x - min_x + 1)
+        sy = max(1, max_y - min_y + 1)
+        sz = max(1, max_z - min_z + 1)
+
+        def pick_bucketed(coords: set[tuple[int, int, int]], target: int) -> list[tuple[int, int, int]]:
+            if target <= 0 or not coords:
+                return []
+            if len(coords) <= target:
+                return sorted(coords, key=lambda c: (c[1], c[2], c[0]))
+
+            # 3D deterministic bucketing: keeps spatial distribution, prevents line-like artifacts.
+            scale = (len(coords) / max(1, target)) ** (1.0 / 3.0)
+            bx = max(1, int(sx / max(1.0, scale)))
+            by = max(1, int(sy / max(1.0, scale)))
+            bz = max(1, int(sz / max(1.0, scale)))
+
+            buckets: dict[tuple[int, int, int], tuple[float, tuple[int, int, int]]] = {}
+            for c in coords:
+                x, y, z = c
+                ix = ((x - min_x) * bx) // sx
+                iy = ((y - min_y) * by) // sy
+                iz = ((z - min_z) * bz) // sz
+                key = (ix, iy, iz)
+
+                cx = min_x + ((ix + 0.5) * sx) / bx
+                cy = min_y + ((iy + 0.5) * sy) / by
+                cz = min_z + ((iz + 0.5) * sz) / bz
+                dist2 = (x - cx) ** 2 + (y - cy) ** 2 + (z - cz) ** 2
+
+                prev = buckets.get(key)
+                if prev is None or dist2 < prev[0]:
+                    buckets[key] = (dist2, c)
+
+            chosen = [entry[1] for _k, entry in sorted(buckets.items(), key=lambda kv: (kv[0][1], kv[0][2], kv[0][0]))]
+            if len(chosen) > target:
+                step = max(1, len(chosen) // target)
+                chosen = chosen[::step][:target]
+            if len(chosen) < target:
+                ordered_all = sorted(coords, key=lambda c: (c[1], c[2], c[0]))
+                chosen_set = set(chosen)
+                for c in ordered_all:
+                    if c not in chosen_set:
+                        chosen.append(c)
+                        chosen_set.add(c)
+                    if len(chosen) >= target:
+                        break
+            return chosen
+
+        shell_sel = pick_bucketed(shell, target_shell)
+        inner_pool = occupied - shell
+        inner_sel = pick_bucketed(inner_pool, target_inner)
+
+        selected = shell_sel + inner_sel
+        if len(selected) < limit:
+            selected_set = set(selected)
+            for c in sorted(occupied, key=lambda c: (c[1], c[2], c[0])):
+                if c not in selected_set:
+                    selected.append(c)
+                    selected_set.add(c)
+                if len(selected) >= limit:
+                    break
+
+        return [by_coord[c] for c in selected[:limit]]
+
+    def _iter_compound_nodes(self, node: Any):
+        if hasattr(node, 'items'):
+            yield node
+            for _k, value in node.items():
+                yield from self._iter_compound_nodes(value)
+        elif isinstance(node, (list, tuple)):
+            for value in node:
+                yield from self._iter_compound_nodes(value)
+
+    def _open_3d_mapper(self) -> None:
+        if not self._voxel_preview_data and self._pending_mapping:
+            input_schem = self.input_schem_var.get().strip() or self._pending_input_schem
+            if input_schem and pathlib.Path(input_schem).exists():
+                try:
+                    top = self.winfo_toplevel()
+                    top.configure(cursor="watch")
+                    self.update_idletasks()
+                except Exception:
+                    top = None
+                self._log("3D preview: подготовка данных начата...")
+                self._build_voxel_preview(input_schem, self._pending_mapping)
+                if top is not None:
+                    try:
+                        top.configure(cursor="")
+                    except Exception:
+                        pass
+
+        # Final UI-safe fallback: always open 3D window even if geometry parsing failed.
+        if not self._voxel_preview_data:
+            rows = self._mapping_rows or []
+            if rows:
+                for idx, row in enumerate(rows[:5000]):
+                    x = idx % 40
+                    z = (idx // 40) % 40
+                    y = idx // (40 * 40)
+                    src = row.get("source", "minecraft:stone")
+                    tgt = row.get("target", src)
+                    tr = categorize_block(src)
+                    self._voxel_preview_data.append(
+                        {
+                            "x": x,
+                            "y": y,
+                            "z": z,
+                            "source": src,
+                            "target": tgt,
+                            "shape": tr.shape,
+                            "changed": self._normalize_block(src) != self._normalize_block(tgt),
+                            "color": self._block_color(src),
+                        }
+                    )
+                self._preview_source_mode = "open_mapping_rows_fallback"
+                self._log("3D preview: fallback из _mapping_rows (геометрия схемы недоступна).")
+
+        if not self._voxel_preview_data:
+            messagebox.showwarning("Нет данных", "Не удалось получить блоки из схемы и mapping. Проверьте входной .schem и повторите шаг 1.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title("3D mapping preview")
+        win.geometry("1200x760")
+
+        top = ttk.Frame(win)
+        top.pack(fill="x", padx=8, pady=8)
+        ttk.Label(top, text="3D-сцена: изменяемые блоки подсвечены красным.").pack(side="left")
+
+        camera_yaw = tk.DoubleVar(value=0.85)
+        camera_pitch = tk.DoubleVar(value=0.58)
+        zoom = tk.DoubleVar(value=24)
+        only_changed = tk.BooleanVar(value=False)
+
+        ttk.Checkbutton(top, text="Показывать только заменяемые", variable=only_changed).pack(side="right")
+        ttk.Scale(top, from_=14, to=42, variable=zoom, orient="horizontal", length=180).pack(side="right", padx=8)
+        ttk.Label(top, text="Zoom").pack(side="right")
+
+        canvas = tk.Canvas(win, bg="#1c1f26", highlightthickness=0)
+        canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        mode_map = {"sponge_root": "схема(root)", "legacy_schematic": "legacy schematic", "regions": "regions", "mapping_rows_fallback": "fallback rows", "pending_mapping_fallback": "fallback pending", "open_mapping_rows_fallback": "fallback open", "none": "не определён"}
+        preview_mode = mode_map.get(self._preview_source_mode, self._preview_source_mode)
+        state_label = ttk.Label(win, text=f"Клик по блоку выделяет его тип для массовой замены. Режим: {preview_mode}.")
+        state_label.pack(fill="x", padx=8, pady=(0, 8))
+
+        def project(px: float, py: float, pz: float) -> tuple[float, float, float]:
+            yaw = camera_yaw.get()
+            pitch = camera_pitch.get()
+            cy, sy = math.cos(yaw), math.sin(yaw)
+            cp, sp = math.cos(pitch), math.sin(pitch)
+            rx = px * cy - pz * sy
+            rz = px * sy + pz * cy
+            ry = py * cp - rz * sp
+            depth = py * sp + rz * cp
+            cx, cyv = canvas.winfo_width() / 2, canvas.winfo_height() / 2
+            scale = zoom.get()
+            return cx + rx * scale, cyv - ry * scale, depth
+
+        draw_items: list[tuple[float, dict[str, Any], list[int] | None, list[int] | None, list[int] | None]] = []
+
+        def draw_scene() -> None:
+            canvas.delete("all")
+            draw_items.clear()
+
+            visible_blocks = [b for b in self._voxel_preview_data if not only_changed.get() or b["changed"]]
+            occupied = {(b["x"], b["y"], b["z"]) for b in visible_blocks}
+
+            for block in visible_blocks:
+                x, y, z = block["x"], block["y"], block["z"]
+
+                show_top = (x, y + 1, z) not in occupied
+                show_left = (x - 1, y, z) not in occupied
+                show_right = (x + 1, y, z) not in occupied
+                if not (show_top or show_left or show_right):
+                    continue
+
+                top_xy: list[int] | None = None
+                left_xy: list[int] | None = None
+                right_xy: list[int] | None = None
+                depth_parts: list[float] = []
+
+                if show_top:
+                    top_pts = [project(x, y + 1, z), project(x + 1, y + 1, z), project(x + 1, y + 1, z + 1), project(x, y + 1, z + 1)]
+                    top_xy = [int(v) for p in top_pts for v in p[:2]]
+                    depth_parts.extend(p[2] for p in top_pts)
+                if show_left:
+                    left_pts = [project(x, y, z + 1), project(x, y + 1, z + 1), project(x, y + 1, z), project(x, y, z)]
+                    left_xy = [int(v) for p in left_pts for v in p[:2]]
+                    depth_parts.extend(p[2] for p in left_pts)
+                if show_right:
+                    right_pts = [project(x + 1, y, z), project(x + 1, y + 1, z), project(x + 1, y + 1, z + 1), project(x + 1, y, z + 1)]
+                    right_xy = [int(v) for p in right_pts for v in p[:2]]
+                    depth_parts.extend(p[2] for p in right_pts)
+
+                depth = sum(depth_parts) / max(1, len(depth_parts))
+                draw_items.append((depth, block, top_xy, left_xy, right_xy))
+
+            draw_items.sort(key=lambda item: item[0], reverse=True)
+            for _depth, block, top_xy, left_xy, right_xy in draw_items:
+                r, g, b = block["color"]
+                edge = "#ff5577" if block["changed"] else "#2b2b2b"
+                top_color = f"#{min(255, r + 30):02x}{min(255, g + 30):02x}{min(255, b + 30):02x}"
+                left_color = f"#{max(0, r - 20):02x}{max(0, g - 20):02x}{max(0, b - 20):02x}"
+                right_color = f"#{max(0, r - 40):02x}{max(0, g - 40):02x}{max(0, b - 40):02x}"
+
+                if top_xy and block["shape"] == "stairs":
+                    top_xy = top_xy[:4] + [(top_xy[2] + top_xy[4]) // 2, (top_xy[3] + top_xy[5]) // 2] + top_xy[6:]
+                if right_xy and block["shape"] == "slab":
+                    right_xy = right_xy[:2] + right_xy[2:4] + [right_xy[4], (right_xy[5] + right_xy[7]) // 2] + [right_xy[6], (right_xy[5] + right_xy[7]) // 2]
+
+                if left_xy:
+                    canvas.create_polygon(left_xy, fill=left_color, outline=edge, width=1)
+                if right_xy:
+                    canvas.create_polygon(right_xy, fill=right_color, outline=edge, width=1)
+                if top_xy:
+                    canvas.create_polygon(top_xy, fill=top_color, outline=edge, width=1)
+
+        def nearest_block(event: tk.Event) -> dict[str, Any] | None:
+            best: tuple[float, dict[str, Any]] | None = None
+            for _depth, block, top_xy, left_xy, right_xy in draw_items:
+                probe = top_xy or left_xy or right_xy
+                if not probe:
+                    continue
+                xs = probe[::2]
+                ys = probe[1::2]
+                if min(xs) <= event.x <= max(xs) and min(ys) <= event.y <= max(ys):
+                    d = ((sum(xs) / len(xs)) - event.x) ** 2 + ((sum(ys) / len(ys)) - event.y) ** 2
+                    if best is None or d < best[0]:
+                        best = (d, block)
+            return best[1] if best else None
+
+        def on_click(event: tk.Event) -> None:
+            block = nearest_block(event)
+            if not block:
+                return
+            src = block["source"]
+            self.filter_var.set(src.split(":")[-1])
+            self._refresh_tree()
+            state_label.configure(text=f"Выбран блок: {src}. Подсвечен в mapping-фильтре.")
+
+        def on_drag(event: tk.Event) -> None:
+            if not hasattr(on_drag, "last"):
+                on_drag.last = (event.x, event.y)  # type: ignore[attr-defined]
+                return
+            lx, ly = on_drag.last  # type: ignore[attr-defined]
+            camera_yaw.set(camera_yaw.get() + (event.x - lx) * 0.01)
+            camera_pitch.set(min(1.3, max(0.2, camera_pitch.get() + (event.y - ly) * 0.006)))
+            on_drag.last = (event.x, event.y)  # type: ignore[attr-defined]
+            draw_scene()
+
+        def on_release(_event: tk.Event) -> None:
+            if hasattr(on_drag, "last"):
+                delattr(on_drag, "last")
+
+        canvas.bind("<Button-1>", on_click)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", on_release)
+        for var in (zoom, only_changed):
+            var.trace_add("write", lambda *_args: draw_scene())
+
+        draw_scene()
 
 
 def launch_gui() -> None:
